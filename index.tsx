@@ -1,244 +1,222 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { createRoot } from 'react-dom/client';
-
-// URL указывает на прокси Nginx, который обрабатывает SSL и перенаправляет на сервер.
-const SIGNALING_SERVER_URL = `wss://rugram.duckdns.org/ws/`;
+import { io, Socket } from 'socket.io-client';
+import { Device } from 'mediasoup-client';
+import { Transport, Producer, Consumer } from 'mediasoup-client/lib/types';
 
 const App: React.FC = () => {
-    const [localStream, setLocalStream] = useState<MediaStream | null>(null);
-    const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
-    const [isMuted, setIsMuted] = useState(false);
-    const [isCameraOff, setIsCameraOff] = useState(false);
     const [roomName, setRoomName] = useState('');
-    const [callState, setCallState] = useState<'idle' | 'waiting' | 'connecting' | 'connected'>('idle');
-    const [connectionStatus, setConnectionStatus] = useState<string>('Disconnected');
-    
+    const [isConnected, setIsConnected] = useState(false);
+    const [localStream, setLocalStream] = useState<MediaStream | null>(null);
+    const [consumers, setConsumers] = useState<Map<string, Consumer>>(new Map());
+    const [remoteStreams, setRemoteStreams] = useState<Map<string, MediaStream>>(new Map());
+    const [status, setStatus] = useState('Отключено');
+
+    const socketRef = useRef<Socket | null>(null);
+    const deviceRef = useRef<Device | null>(null);
+    const sendTransportRef = useRef<Transport | null>(null);
+    const recvTransportRef = useRef<Transport | null>(null);
+    const producerRef = useRef<Producer | null>(null);
     const localVideoRef = useRef<HTMLVideoElement>(null);
-    const remoteVideoRef = useRef<HTMLVideoElement>(null);
-    const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
-    const wsRef = useRef<WebSocket | null>(null);
+    const remoteVideoContainerRef = useRef<HTMLDivElement>(null);
 
-    const STUN_SERVERS = {
-        iceServers: [
-            { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:stun1.l.google.com:19302' },
-        ],
-    };
-
-    useEffect(() => {
-        const startMedia = async () => {
-            try {
-                const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-                setLocalStream(stream);
-                if (localVideoRef.current) {
-                    localVideoRef.current.srcObject = stream;
-                }
-            } catch (error) {
-                console.error('Error accessing media devices.', error);
-                alert('Не удалось получить доступ к камере и микрофону. Пожалуйста, разрешите доступ.');
-            }
-        };
-        startMedia();
-
-        return () => {
-            localStream?.getTracks().forEach(track => track.stop());
-            wsRef.current?.close();
-            peerConnectionRef.current?.close();
-        };
-    }, []);
-    
-    const initializePeerConnection = () => {
-        const pc = new RTCPeerConnection(STUN_SERVERS);
-
-        pc.onicecandidate = event => {
-            if (event.candidate && wsRef.current?.readyState === WebSocket.OPEN) {
-                wsRef.current.send(JSON.stringify({ type: 'ice-candidate', candidate: event.candidate }));
-            }
-        };
-
-        pc.ontrack = event => {
-            setRemoteStream(event.streams[0]);
-            if (remoteVideoRef.current) {
-                remoteVideoRef.current.srcObject = event.streams[0];
-            }
-        };
-        
-        pc.oniceconnectionstatechange = () => {
-            if(pc.iceConnectionState) {
-                setConnectionStatus(pc.iceConnectionState);
-                if (pc.iceConnectionState === 'connected') {
-                    setCallState('connected');
-                }
-                if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'closed') {
-                    if (callState === 'connected') {
-                        endCall();
-                    }
-                }
-            }
-        };
-
-        localStream?.getTracks().forEach(track => {
-            pc.addTrack(track, localStream);
-        });
-
-        peerConnectionRef.current = pc;
-        return pc;
-    };
-
-    const handleSignalingData = async (data: any) => {
-        switch (data.type) {
-            case 'ready':
-                setCallState('connecting');
-                const pc = initializePeerConnection();
-                const offer = await pc.createOffer();
-                await pc.setLocalDescription(offer);
-                wsRef.current?.send(JSON.stringify({ type: 'offer', sdp: pc.localDescription }));
-                break;
-            case 'offer':
-                setCallState('connecting');
-                const peerConnection = initializePeerConnection();
-                await peerConnection.setRemoteDescription(new RTCSessionDescription(data.sdp));
-                const answer = await peerConnection.createAnswer();
-                await peerConnection.setLocalDescription(answer);
-                wsRef.current?.send(JSON.stringify({ type: 'answer', sdp: peerConnection.localDescription }));
-                break;
-            case 'answer':
-                await peerConnectionRef.current?.setRemoteDescription(new RTCSessionDescription(data.sdp));
-                break;
-            case 'ice-candidate':
-                await peerConnectionRef.current?.addIceCandidate(new RTCIceCandidate(data.candidate));
-                break;
-            case 'full':
-                alert('Комната заполнена.');
-                setCallState('idle');
-                break;
-            default:
-                break;
-        }
-    };
-
-    const connectToSignaling = () => {
+    const joinRoom = async () => {
         if (!roomName.trim()) {
             alert('Пожалуйста, введите название комнаты.');
             return;
         }
 
-        const ws = new WebSocket(SIGNALING_SERVER_URL);
-        wsRef.current = ws;
-
-        ws.onopen = () => {
-            ws.send(JSON.stringify({ type: 'join', room: roomName }));
-            setCallState('waiting');
-        };
-
-        ws.onmessage = (event) => {
-            const data = JSON.parse(event.data);
-            handleSignalingData(data);
-        };
-
-        ws.onclose = () => {
-            if (callState !== 'idle') {
-                endCall();
-                alert('Соединение с сервером потеряно.');
+        setStatus('Подключение...');
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({
+                video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+                audio: { echoCancellation: true, noiseSuppression: true }
+            });
+            setLocalStream(stream);
+            if (localVideoRef.current) {
+                localVideoRef.current.srcObject = stream;
             }
-        };
 
-        ws.onerror = (error) => {
-            console.error('WebSocket Error:', error);
-            alert('Не удалось подключиться к сигнальному серверу. Убедитесь, что сервер запущен и доступен.');
-            setCallState('idle');
-        };
-    };
+            const socket = io({ path: '/socket.io/' });
+            socketRef.current = socket;
 
-    const endCall = () => {
-        peerConnectionRef.current?.close();
-        peerConnectionRef.current = null;
-        wsRef.current?.close();
-        wsRef.current = null;
-        setRemoteStream(null);
-        setCallState('idle');
-        setConnectionStatus('Disconnected');
-        setRoomName('');
-    };
+            socket.on('connect', async () => {
+                setStatus('Получение данных медиа-сервера...');
+                socket.emit('getRouterRtpCapabilities', { roomName }, async (routerRtpCapabilities: any) => {
+                    const device = new Device();
+                    await device.load({ routerRtpCapabilities });
+                    deviceRef.current = device;
 
-    const toggleMute = () => {
-        if (localStream) {
-            const newMutedState = !isMuted;
-            setIsMuted(newMutedState);
-            localStream.getAudioTracks().forEach(track => {
-                track.enabled = !newMutedState;
+                    socket.emit('createWebRtcTransport', { isSender: true }, async (params: any) => {
+                        const transport = device.createSendTransport(params);
+                        sendTransportRef.current = transport;
+
+                        transport.on('connect', ({ dtlsParameters }, callback) => {
+                            socket.emit('connectTransport', { transportId: transport.id, dtlsParameters }, callback);
+                        });
+
+                        transport.on('produce', async ({ kind, rtpParameters, appData }, callback) => {
+                            socket.emit('produce', { transportId: transport.id, kind, rtpParameters, appData }, ({ id }: { id: string }) => {
+                                callback({ id });
+                            });
+                        });
+
+                        await produceStream(stream);
+                    });
+
+                    socket.emit('createWebRtcTransport', { isSender: false }, async (params: any) => {
+                        const transport = device.createRecvTransport(params);
+                        recvTransportRef.current = transport;
+
+                        transport.on('connect', ({ dtlsParameters }, callback) => {
+                            socket.emit('connectTransport', { transportId: transport.id, dtlsParameters }, callback);
+                        });
+                    });
+                    
+                    socket.emit('joinRoom', { roomName }, (existingProducers: any[]) => {
+                        setStatus(`В комнате: ${roomName}`);
+                        setIsConnected(true);
+                        for (const producerInfo of existingProducers) {
+                           consume(producerInfo.id);
+                        }
+                    });
+
+                });
             });
-        }
-    };
 
-    const toggleCamera = () => {
-        if (localStream) {
-            const newCameraOffState = !isCameraOff;
-            setIsCameraOff(newCameraOffState);
-            localStream.getVideoTracks().forEach(track => {
-                track.enabled = !newCameraOffState;
+            socket.on('new-producer', ({ producerId }) => {
+                consume(producerId);
             });
+
+            socket.on('producer-closed', ({ producerId }) => {
+                const newConsumers = new Map(consumers);
+                const consumer = newConsumers.get(producerId);
+                if (consumer) {
+                    consumer.close();
+                    newConsumers.delete(producerId);
+                    setConsumers(newConsumers);
+                }
+                
+                const newRemoteStreams = new Map(remoteStreams);
+                if (newRemoteStreams.has(producerId)) {
+                    newRemoteStreams.delete(producerId);
+                    setRemoteStreams(newRemoteStreams);
+                }
+            });
+
+            socket.on('disconnect', () => {
+                setStatus('Отключено');
+                cleanUp();
+            });
+
+        } catch (error) {
+            console.error('Не удалось получить доступ к камере или микрофону:', error);
+            setStatus('Ошибка: нет доступа к камере/микрофону');
         }
     };
     
-    const renderConnectionStep = () => {
-        switch (callState) {
-            case 'idle':
-                return (
-                    <div className="room-controls">
-                        <input
-                            type="text"
-                            placeholder="Введите название комнаты"
-                            value={roomName}
-                            onChange={(e) => setRoomName(e.target.value)}
-                            aria-label="Room Name"
-                        />
-                        <button onClick={connectToSignaling} disabled={!localStream || !roomName.trim()}>
-                            Войти
-                        </button>
-                    </div>
-                );
-            case 'waiting':
-                return <p>Ожидание другого пользователя в комнате: <strong>{roomName}</strong></p>;
-            case 'connecting':
-                return <p>Соединение...</p>;
-            case 'connected':
-                return (
-                     <div className="call-controls">
-                        <button onClick={toggleMute}>{isMuted ? 'Вкл. звук' : 'Выкл. звук'}</button>
-                        <button onClick={toggleCamera}>{isCameraOff ? 'Вкл. камеру' : 'Выкл. камеру'}</button>
-                        <button onClick={endCall} className="btn-end-call">Завершить звонок</button>
-                    </div>
-                )
-            default:
-                return null;
+    const produceStream = async (stream: MediaStream) => {
+        const videoTrack = stream.getVideoTracks()[0];
+        const audioTrack = stream.getAudioTracks()[0];
+        if (videoTrack) {
+            producerRef.current = await sendTransportRef.current!.produce({ track: videoTrack, appData: { mediaType: 'video' } });
         }
+        if (audioTrack) {
+            await sendTransportRef.current!.produce({ track: audioTrack, appData: { mediaType: 'audio' } });
+        }
+    };
+
+    const consume = async (producerId: string) => {
+        const { rtpCapabilities } = deviceRef.current!;
+        socketRef.current!.emit('consume', { producerId, rtpCapabilities }, async (params: any) => {
+            if (params.error) {
+                console.error('Ошибка создания консьюмера:', params.error);
+                return;
+            }
+
+            const consumer = await recvTransportRef.current!.consume(params);
+            
+            // --- КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: БЕЗ ЭТОГО БУДЕТ ЧЕРНЫЙ ЭКРАН ---
+            // Говорим серверу, что мы готовы получать данные
+            socketRef.current!.emit('resume', { consumerId: consumer.id });
+
+            setConsumers(prev => new Map(prev).set(producerId, consumer));
+
+            const { track } = consumer;
+            const newStream = new MediaStream([track]);
+            setRemoteStreams(prev => new Map(prev).set(producerId, newStream));
+        });
+    };
+    
+    const cleanUp = () => {
+        localStream?.getTracks().forEach(track => track.stop());
+        socketRef.current?.disconnect();
+        
+        sendTransportRef.current?.close();
+        recvTransportRef.current?.close();
+
+        setIsConnected(false);
+        setLocalStream(null);
+        setRemoteStreams(new Map());
+        setConsumers(new Map());
+    };
+
+    const leaveRoom = () => {
+        cleanUp();
+        setStatus('Отключено');
+        setRoomName('');
     };
 
     return (
         <div className="app-container">
             <header className="header">
                 <h1>RuGram Call</h1>
-                <p>Безопасные видеозвонки</p>
+                <p>Видеозвонки через выделенный сервер</p>
             </header>
 
-            <div className={`status ${connectionStatus === 'connected' ? 'status-connected' : 'status-disconnected'}`}>
-                ICE Status: <strong>{connectionStatus}</strong>
+            <div className={`status ${isConnected ? 'status-connected' : 'status-disconnected'}`}>
+                Статус: <strong>{status}</strong>
             </div>
-            
+
             <div className="videos-container">
                 <div className={`video-wrapper ${localStream ? 'active' : ''}`}>
                     <video ref={localVideoRef} className="local-video" autoPlay playsInline muted />
                     <div className="video-label">Вы</div>
                 </div>
-                <div className={`video-wrapper ${remoteStream ? 'active' : ''}`}>
-                    <video ref={remoteVideoRef} autoPlay playsInline style={{ display: remoteStream ? 'block' : 'none' }} />
-                     {remoteStream && <div className="video-label">Собеседник</div>}
-                </div>
+                {Array.from(remoteStreams.entries()).map(([producerId, stream]) => (
+                    <div key={producerId} className={`video-wrapper active`}>
+                        <video 
+                            ref={(videoEl) => {
+                                if (videoEl) videoEl.srcObject = stream;
+                            }}
+                            autoPlay 
+                            playsInline 
+                        />
+                         <div className="video-label">Собеседник</div>
+                    </div>
+                ))}
             </div>
-            
+
             <div className="controls-container">
-                {renderConnectionStep()}
+                {!isConnected ? (
+                    <div className="room-controls">
+                        <input
+                            type="text"
+                            placeholder="Введите название комнаты"
+                            value={roomName}
+                            onChange={(e) => setRoomName(e.target.value)}
+                        />
+                        <button onClick={joinRoom} disabled={!roomName.trim()}>
+                            Войти в комнату
+                        </button>
+                    </div>
+                ) : (
+                    <div className="call-controls">
+                        <button onClick={leaveRoom} className="btn-end-call">
+                            Выйти из комнаты
+                        </button>
+                    </div>
+                )}
             </div>
         </div>
     );

@@ -166,6 +166,9 @@
   "imports": {
     "react": "https://aistudiocdn.com/react@^19.1.1",
     "react-dom/": "https://aistudiocdn.com/react-dom@^19.1.1/",
+    "socket.io-client": "https://aistudiocdn.com/socket.io-client@^4.8.1",
+    "mediasoup-client": "https://aistudiocdn.com/mediasoup-client@^3.16.7",
+    "mediasoup-client/": "https://aistudiocdn.com/mediasoup-client@^3.16.7/",
     "react/": "https://aistudiocdn.com/react@^19.1.1/"
   }
 }
@@ -173,7 +176,6 @@
 </head>
 <body>
   <div id="root"></div>
-  <!-- Это правильный способ указать точку входа для Vite -->
-  <script type="module" src="/index.tsx"></script>
+  <script src="/dist/bundle.js"></script>
 </body>
 </html>
