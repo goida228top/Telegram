@@ -148,33 +148,40 @@ async function run() {
                 }
                 
                 const peer = room.peers.get(socket.id);
-                if (!peer) return;
+                if (!peer) {
+                    return callback({ error: 'Peer not found' });
+                }
 
                 const transport = Array.from(peer.transports.values()).find(t => t.appData.isSender !== true);
                 if (!transport) {
                     console.error(`[ERROR] Peer ${socket.id} has no recv transport`);
-                    return;
+                    return callback({ error: 'No recv transport found' });
                 }
                 
                 console.log(`[INFO] Peer ${socket.id} consuming producer ${producerId}`);
-                const consumer = await transport.consume({
-                    producerId,
-                    rtpCapabilities,
-                    paused: true,
-                });
-                peer.consumers.set(consumer.id, consumer);
-                
-                consumer.on('producerclose', () => {
-                     console.log(`[INFO] Consumer for peer ${socket.id} closed because producer ${producerId} closed`);
-                     socket.emit('producer-closed', { producerId });
-                });
-
-                callback({
-                    id: consumer.id,
-                    producerId,
-                    kind: consumer.kind,
-                    rtpParameters: consumer.rtpParameters,
-                });
+                try {
+                    const consumer = await transport.consume({
+                        producerId,
+                        rtpCapabilities,
+                        paused: true,
+                    });
+                    peer.consumers.set(consumer.id, consumer);
+                    
+                    consumer.on('producerclose', () => {
+                         console.log(`[INFO] Consumer for peer ${socket.id} closed because producer ${producerId} closed`);
+                         socket.emit('producer-closed', { producerId });
+                    });
+    
+                    callback({
+                        id: consumer.id,
+                        producerId,
+                        kind: consumer.kind,
+                        rtpParameters: consumer.rtpParameters,
+                    });
+                } catch(error) {
+                    console.error(`[ERROR] Consume failed for peer ${socket.id}`, error);
+                    return callback({ error: error.message });
+                }
             });
 
             socket.on('resume', async ({ consumerId }) => {
