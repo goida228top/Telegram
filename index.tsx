@@ -35,20 +35,20 @@ const RemotePeerComponent: React.FC<{
     const videoRef = useRef<HTMLVideoElement>(null);
 
     useEffect(() => {
-        // Assign the combined stream to the video element's srcObject
         if (videoRef.current && peerData.stream) {
             videoRef.current.srcObject = peerData.stream;
+            // Explicitly unmute remote streams
+            videoRef.current.muted = false;
         }
-    }, [peerData.stream]); // Re-run when the stream object reference changes
+    }, [peerData.stream]);
 
-    const hasVideo = peerData.stream?.getVideoTracks().length > 0;
+    const hasVideo = peerData.stream?.getVideoTracks().some(track => track.readyState === 'live' && !track.muted);
 
     return (
         <div className={`video-wrapper active ${isSpeaking ? 'speaking' : ''}`}>
             {/* The video element is always rendered to play audio. Its visibility depends on a video track. */}
             <video ref={videoRef} autoPlay playsInline style={{ visibility: hasVideo ? 'visible' : 'hidden' }} />
             
-            {/* Show avatar if there's no video */}
             {!hasVideo && <AvatarIcon />}
 
             <div className="video-label">Собеседник</div>
@@ -76,12 +76,29 @@ const App: React.FC = () => {
     const audioProducerRef = useRef<Producer | null>(null);
     const localVideoRef = useRef<HTMLVideoElement>(null);
     const analysisRefs = useRef<Map<string, AnalysisData>>(new Map());
+    const audioContextRef = useRef<AudioContext | null>(null);
+
+    // Function to unlock the AudioContext, crucial for autoplay policies
+    const unlockAudio = async () => {
+        if (!audioContextRef.current) {
+             audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+        }
+        if (audioContextRef.current.state === 'suspended') {
+            console.log('AudioContext is suspended, resuming...');
+            try {
+                await audioContextRef.current.resume();
+                console.log('AudioContext resumed successfully.');
+            } catch (err) {
+                console.error('Failed to resume AudioContext:', err);
+            }
+        }
+    };
 
     const setupAudioAnalysis = (stream: MediaStream, id: string) => {
         const audioTrack = stream.getAudioTracks()[0];
-        if (!audioTrack || analysisRefs.current.has(id)) return;
+        if (!audioTrack || analysisRefs.current.has(id) || !audioContextRef.current) return;
 
-        const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+        const audioContext = audioContextRef.current;
         const analyser = audioContext.createAnalyser();
         analyser.fftSize = 512;
         analyser.smoothingTimeConstant = 0.5;
@@ -117,7 +134,7 @@ const App: React.FC = () => {
             cancelAnimationFrame(analysisData.animationFrameId);
             analysisData.source.disconnect();
             analysisData.analyser.disconnect();
-            analysisData.context.close().catch(console.error);
+            // We don't close the shared context here
             analysisRefs.current.delete(id);
         }
         setSpeakingStates(prev => {
@@ -133,6 +150,9 @@ const App: React.FC = () => {
             alert('Пожалуйста, введите название комнаты.');
             return;
         }
+
+        // --- KEY FIX: Unlock audio context on user gesture ---
+        await unlockAudio();
 
         let stream: MediaStream;
         let videoEnabled = callType === 'video';
@@ -265,6 +285,7 @@ const App: React.FC = () => {
                                 newPeers.delete(peerIdToUpdate);
                             }
                         } else {
+                             stopAudioAnalysis(peerIdToUpdate);
                              newPeers.delete(peerIdToUpdate);
                         }
                     }
@@ -318,11 +339,10 @@ const App: React.FC = () => {
 
             const { track } = consumer;
             
-            // IMMUTABLE UPDATE: Create a new stream with the new track to ensure React re-renders.
             setRemotePeers(prev => {
                 const newPeers = new Map(prev);
                 const oldData = newPeers.get(peerId);
-                const existingTracks = oldData?.stream?.getTracks() || [];
+                const existingTracks = oldData?.stream?.getTracks().filter(t => t.kind !== track.kind) || [];
                 const newStream = new MediaStream([...existingTracks, track]);
         
                 const newData = {
@@ -344,6 +364,11 @@ const App: React.FC = () => {
     const cleanUp = () => {
         stopAudioAnalysis('local');
         analysisRefs.current.forEach((_, id) => stopAudioAnalysis(id));
+
+        if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+            audioContextRef.current.close().catch(console.error);
+            audioContextRef.current = null;
+        }
 
         localStream?.getTracks().forEach(track => track.stop());
         socketRef.current?.disconnect();
