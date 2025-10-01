@@ -5,9 +5,9 @@ import { io, Socket } from 'socket.io-client';
 import { Device } from 'mediasoup-client';
 import { Transport, Producer, Consumer } from 'mediasoup-client/lib/types';
 
+// A single stream will hold both audio and video tracks for a peer
 type RemotePeerData = {
-    videoStream: MediaStream | null;
-    audioStream: MediaStream | null;
+    stream: MediaStream | null;
     videoProducerId: string | null;
     audioProducerId: string | null;
 };
@@ -15,6 +15,7 @@ type RemotePeerData = {
 type AnalysisData = {
     context: AudioContext;
     source: MediaStreamAudioSourceNode;
+    analyser: AnalyserNode;
     animationFrameId: number;
 };
 
@@ -26,37 +27,30 @@ const CamOffIcon = () => (<svg xmlns="http://www.w3.org/2000/svg" height="24px" 
 const AvatarIcon = () => (<svg className="avatar-icon" xmlns="http://www.w3.org/2000/svg" enableBackground="new 0 0 24 24" height="24px" viewBox="0 0 24 24" width="24px" fill="currentColor"><g><rect fill="none" height="24" width="24"/></g><g><path d="M12,12c2.21,0,4-1.79,4-4s-1.79-4-4-4S8,5.79,8,8S9.79,12,12,12z M12,14c-2.67,0-8,1.34-8,4v2h16v-2 C20,15.34,14.67,14,12,14z"/></g></svg>);
 
 
-// Dedicated component for rendering a remote peer to ensure stable stream handling
+// This component now handles a single combined stream for a peer.
 const RemotePeerComponent: React.FC<{
     peerData: RemotePeerData,
     isSpeaking: boolean
 }> = ({ peerData, isSpeaking }) => {
     const videoRef = useRef<HTMLVideoElement>(null);
-    const audioRef = useRef<HTMLAudioElement>(null);
 
     useEffect(() => {
-        if (videoRef.current && peerData.videoStream) {
-            videoRef.current.srcObject = peerData.videoStream;
+        // Assign the combined stream to the video element's srcObject
+        if (videoRef.current && peerData.stream) {
+            videoRef.current.srcObject = peerData.stream;
         }
-    }, [peerData.videoStream]);
+    }, [peerData.stream]); // Re-run when the stream object reference changes
 
-    useEffect(() => {
-        if (audioRef.current && peerData.audioStream) {
-            audioRef.current.srcObject = peerData.audioStream;
-        }
-    }, [peerData.audioStream]);
+    const hasVideo = peerData.stream?.getVideoTracks().length > 0;
 
     return (
         <div className={`video-wrapper active ${isSpeaking ? 'speaking' : ''}`}>
-            {peerData.videoStream ? (
-                <video ref={videoRef} autoPlay playsInline />
-            ) : (
-                <AvatarIcon />
-            )}
-            {/* Audio element is present but invisible */}
-            {peerData.audioStream && (
-                <audio ref={audioRef} autoPlay playsInline />
-            )}
+            {/* The video element is always rendered to play audio. Its visibility depends on a video track. */}
+            <video ref={videoRef} autoPlay playsInline style={{ visibility: hasVideo ? 'visible' : 'hidden' }} />
+            
+            {/* Show avatar if there's no video */}
+            {!hasVideo && <AvatarIcon />}
+
             <div className="video-label">Собеседник</div>
         </div>
     );
@@ -85,7 +79,7 @@ const App: React.FC = () => {
 
     const setupAudioAnalysis = (stream: MediaStream, id: string) => {
         const audioTrack = stream.getAudioTracks()[0];
-        if (!audioTrack) return;
+        if (!audioTrack || analysisRefs.current.has(id)) return;
 
         const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
         const analyser = audioContext.createAnalyser();
@@ -101,7 +95,7 @@ const App: React.FC = () => {
         const checkVolume = () => {
             analyser.getByteFrequencyData(dataArray);
             const average = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
-            const isSpeaking = average > 20; // Порог чувствительности (0-255)
+            const isSpeaking = average > 20;
 
             setSpeakingStates(prev => {
                 if (prev.get(id) === isSpeaking) return prev;
@@ -114,7 +108,7 @@ const App: React.FC = () => {
         };
         animationFrameId = requestAnimationFrame(checkVolume);
 
-        analysisRefs.current.set(id, { context: audioContext, source, animationFrameId });
+        analysisRefs.current.set(id, { context: audioContext, source, analyser, animationFrameId });
     };
 
     const stopAudioAnalysis = (id: string) => {
@@ -122,6 +116,7 @@ const App: React.FC = () => {
         if (analysisData) {
             cancelAnimationFrame(analysisData.animationFrameId);
             analysisData.source.disconnect();
+            analysisData.analyser.disconnect();
             analysisData.context.close().catch(console.error);
             analysisRefs.current.delete(id);
         }
@@ -183,10 +178,7 @@ const App: React.FC = () => {
                     await device.load({ routerRtpCapabilities });
                     deviceRef.current = device;
 
-                    // 1. Join room to create Peer on server
                     socket.emit('joinRoom', { roomName }, async (existingProducers: any[]) => {
-
-                        // 2. Create Send Transport
                         socket.emit('createWebRtcTransport', { isSender: true }, async (sendParams: any) => {
                             const sendTransport = device.createSendTransport(sendParams);
                             sendTransportRef.current = sendTransport;
@@ -201,7 +193,6 @@ const App: React.FC = () => {
                                 });
                             });
 
-                             // 3. Create Recv Transport
                             socket.emit('createWebRtcTransport', { isSender: false }, async (recvParams: any) => {
                                 const recvTransport = device.createRecvTransport(recvParams);
                                 recvTransportRef.current = recvTransport;
@@ -210,7 +201,6 @@ const App: React.FC = () => {
                                     socket.emit('connectTransport', { transportId: recvTransport.id, dtlsParameters }, callback);
                                 });
 
-                                // 4. We are ready to produce and consume
                                 setStatus(`В комнате: ${roomName}`);
                                 setIsConnected(true);
                                 
@@ -231,46 +221,54 @@ const App: React.FC = () => {
             });
 
             socket.on('producer-closed', ({ producerId }) => {
-                const newConsumers = new Map(consumers);
-                const consumer = newConsumers.get(producerId);
+                const consumer = consumers.get(producerId);
                 if (consumer) {
                     consumer.close();
+                    const newConsumers = new Map(consumers);
                     newConsumers.delete(producerId);
                     setConsumers(newConsumers);
                 }
                 
                 setRemotePeers(prev => {
                     const newPeers = new Map(prev);
-                    let peerIdFound: string | null = null;
-            
+                    let peerIdToUpdate: string | null = null;
+                    
                     for (const [peerId, data] of newPeers.entries()) {
                         if (data.videoProducerId === producerId || data.audioProducerId === producerId) {
-                            peerIdFound = peerId;
+                            peerIdToUpdate = peerId;
                             break;
                         }
                     }
+                    
+                    if (peerIdToUpdate) {
+                        const oldData = newPeers.get(peerIdToUpdate)!;
+                        const isVideo = oldData.videoProducerId === producerId;
+                        const trackToRemove = isVideo 
+                            ? oldData.stream?.getVideoTracks()[0] 
+                            : oldData.stream?.getAudioTracks()[0];
             
-                    if (peerIdFound) {
-                        const peerData = { ...newPeers.get(peerIdFound)! }; 
+                        if (trackToRemove && oldData.stream) {
+                            const remainingTracks = oldData.stream.getTracks().filter(t => t.id !== trackToRemove.id);
             
-                        if (peerData.videoProducerId === producerId) {
-                            peerData.videoStream = null;
-                            peerData.videoProducerId = null;
-                        } else if (peerData.audioProducerId === producerId) {
-                            peerData.audioStream = null;
-                            peerData.audioProducerId = null;
-                            stopAudioAnalysis(peerIdFound);
-                        }
-            
-                        if (!peerData.videoStream && !peerData.audioStream) {
-                            newPeers.delete(peerIdFound);
+                            if (remainingTracks.length > 0) {
+                                const newData = { ...oldData };
+                                newData.stream = new MediaStream(remainingTracks);
+                                if (isVideo) {
+                                    newData.videoProducerId = null;
+                                } else {
+                                    newData.audioProducerId = null;
+                                    stopAudioAnalysis(peerIdToUpdate);
+                                }
+                                newPeers.set(peerIdToUpdate, newData);
+                            } else {
+                                stopAudioAnalysis(peerIdToUpdate);
+                                newPeers.delete(peerIdToUpdate);
+                            }
                         } else {
-                            newPeers.set(peerIdFound, peerData);
+                             newPeers.delete(peerIdToUpdate);
                         }
-                        return newPeers;
                     }
-            
-                    return prev; 
+                    return newPeers;
                 });
             });
 
@@ -295,16 +293,15 @@ const App: React.FC = () => {
         const audioTrack = stream.getAudioTracks()[0];
         
         if (isCameraOn && videoTrack) {
-            videoProducerRef.current = await sendTransportRef.current!.produce({ track: videoTrack, appData: { mediaType: 'video' } });
+            videoProducerRef.current = await sendTransportRef.current.produce({ track: videoTrack, appData: { mediaType: 'video' } });
         }
         if (audioTrack) {
-            audioProducerRef.current = await sendTransportRef.current!.produce({ track: audioTrack, appData: { mediaType: 'audio' } });
+            audioProducerRef.current = await sendTransportRef.current.produce({ track: audioTrack, appData: { mediaType: 'audio' } });
         }
     };
 
     const consume = async (producerId: string, mediaType: 'video' | 'audio', peerId: string) => {
         if (!deviceRef.current || !socketRef.current || !recvTransportRef.current) {
-            console.error("Cannot consume, refs not ready");
             return;
         }
         const { rtpCapabilities } = deviceRef.current;
@@ -320,23 +317,25 @@ const App: React.FC = () => {
             setConsumers(prev => new Map(prev).set(producerId, consumer));
 
             const { track } = consumer;
-            const newStream = new MediaStream([track]);
-
+            
+            // IMMUTABLE UPDATE: Create a new stream with the new track to ensure React re-renders.
             setRemotePeers(prev => {
                 const newPeers = new Map(prev);
-                const oldPeerData = newPeers.get(peerId) || { videoStream: null, audioStream: null, videoProducerId: null, audioProducerId: null };
-                const newPeerData = { ...oldPeerData };
-
-                if (mediaType === 'video') {
-                    newPeerData.videoStream = newStream;
-                    newPeerData.videoProducerId = producerId;
-                } else {
-                    newPeerData.audioStream = newStream;
-                    newPeerData.audioProducerId = producerId;
+                const oldData = newPeers.get(peerId);
+                const existingTracks = oldData?.stream?.getTracks() || [];
+                const newStream = new MediaStream([...existingTracks, track]);
+        
+                const newData = {
+                    stream: newStream,
+                    videoProducerId: mediaType === 'video' ? producerId : oldData?.videoProducerId || null,
+                    audioProducerId: mediaType === 'audio' ? producerId : oldData?.audioProducerId || null,
+                };
+        
+                if (mediaType === 'audio') {
                     setupAudioAnalysis(newStream, peerId);
                 }
-                
-                newPeers.set(peerId, newPeerData);
+        
+                newPeers.set(peerId, newData);
                 return newPeers;
             });
         });
