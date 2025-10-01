@@ -69,9 +69,9 @@ async function run() {
                 socket.join(roomName);
 
                 const existingProducers = [];
-                rooms[roomName].peers.forEach(peer => {
-                    peer.producers.forEach(producer => {
-                        existingProducers.push({ id: producer.id, appData: producer.appData });
+                rooms[roomName].peers.forEach((peerData, peerId) => {
+                    peerData.producers.forEach(producer => {
+                        existingProducers.push({ id: producer.id, appData: producer.appData, peerId });
                     });
                 });
                 
@@ -135,7 +135,7 @@ async function run() {
                 peer.producers.set(producer.id, producer);
                 
                 // Inform other peers in the room
-                socket.to(currentRoomName).emit('new-producer', { producerId: producer.id, appData: producer.appData });
+                socket.to(currentRoomName).emit('new-producer', { producerId: producer.id, appData: producer.appData, peerId: socket.id });
                 
                 callback({ id: producer.id });
             });

@@ -4,10 +4,11 @@ import { io, Socket } from 'socket.io-client';
 import { Device } from 'mediasoup-client';
 import { Transport, Producer, Consumer } from 'mediasoup-client/lib/types';
 
-type RemoteStreamData = {
-    stream: MediaStream;
-    mediaType: 'video' | 'audio';
-    isMuted?: boolean;
+type RemotePeerData = {
+    videoStream: MediaStream | null;
+    audioStream: MediaStream | null;
+    videoProducerId: string | null;
+    audioProducerId: string | null;
 };
 
 type AnalysisData = {
@@ -29,7 +30,7 @@ const App: React.FC = () => {
     const [isConnected, setIsConnected] = useState(false);
     const [localStream, setLocalStream] = useState<MediaStream | null>(null);
     const [consumers, setConsumers] = useState<Map<string, Consumer>>(new Map());
-    const [remoteStreams, setRemoteStreams] = useState<Map<string, RemoteStreamData>>(new Map());
+    const [remotePeers, setRemotePeers] = useState<Map<string, RemotePeerData>>(new Map());
     const [status, setStatus] = useState('Отключено');
     const [isMicOn, setIsMicOn] = useState(true);
     const [isCameraOn, setIsCameraOn] = useState(true);
@@ -174,14 +175,15 @@ const App: React.FC = () => {
                         setStatus(`В комнате: ${roomName}`);
                         setIsConnected(true);
                         for (const producerInfo of existingProducers) {
-                           consume(producerInfo.id, producerInfo.appData.mediaType);
+                           consume(producerInfo.id, producerInfo.appData.mediaType, producerInfo.peerId);
                         }
                     });
                 });
             });
 
-            socket.on('new-producer', ({ producerId, appData }) => {
-                consume(producerId, appData.mediaType);
+            socket.on('new-producer', ({ producerId, appData, peerId }) => {
+                if (peerId === socket.id) return;
+                consume(producerId, appData.mediaType, peerId);
             });
 
             socket.on('producer-closed', ({ producerId }) => {
@@ -193,12 +195,39 @@ const App: React.FC = () => {
                     setConsumers(newConsumers);
                 }
                 
-                const newRemoteStreams = new Map(remoteStreams);
-                if (newRemoteStreams.has(producerId)) {
-                    newRemoteStreams.delete(producerId);
-                    setRemoteStreams(newRemoteStreams);
-                }
-                stopAudioAnalysis(producerId);
+                setRemotePeers(prev => {
+                    const newPeers = new Map(prev);
+                    let peerIdFound: string | null = null;
+            
+                    for (const [peerId, data] of newPeers.entries()) {
+                        if (data.videoProducerId === producerId || data.audioProducerId === producerId) {
+                            peerIdFound = peerId;
+                            break;
+                        }
+                    }
+            
+                    if (peerIdFound) {
+                        const peerData = { ...newPeers.get(peerIdFound)! }; 
+            
+                        if (peerData.videoProducerId === producerId) {
+                            peerData.videoStream = null;
+                            peerData.videoProducerId = null;
+                        } else if (peerData.audioProducerId === producerId) {
+                            peerData.audioStream = null;
+                            peerData.audioProducerId = null;
+                            stopAudioAnalysis(peerIdFound);
+                        }
+            
+                        if (!peerData.videoStream && !peerData.audioStream) {
+                            newPeers.delete(peerIdFound);
+                        } else {
+                            newPeers.set(peerIdFound, peerData);
+                        }
+                        return newPeers;
+                    }
+            
+                    return prev; 
+                });
             });
 
             socket.on('disconnect', () => {
@@ -225,7 +254,7 @@ const App: React.FC = () => {
         }
     };
 
-    const consume = async (producerId: string, mediaType: 'video' | 'audio') => {
+    const consume = async (producerId: string, mediaType: 'video' | 'audio', peerId: string) => {
         const { rtpCapabilities } = deviceRef.current!;
         socketRef.current!.emit('consume', { producerId, rtpCapabilities }, async (params: any) => {
             if (params.error) {
@@ -241,11 +270,22 @@ const App: React.FC = () => {
             const { track } = consumer;
             const newStream = new MediaStream([track]);
 
-            setRemoteStreams(prev => new Map(prev).set(producerId, { stream: newStream, mediaType, isMuted: consumer.track.muted }));
-
-            if (mediaType === 'audio') {
-                 setupAudioAnalysis(newStream, producerId);
-            }
+            setRemotePeers(prev => {
+                const newPeers = new Map(prev);
+                const peerData = newPeers.get(peerId) || { videoStream: null, audioStream: null, videoProducerId: null, audioProducerId: null };
+                
+                if (mediaType === 'video') {
+                    peerData.videoStream = newStream;
+                    peerData.videoProducerId = producerId;
+                } else {
+                    peerData.audioStream = newStream;
+                    peerData.audioProducerId = producerId;
+                    setupAudioAnalysis(newStream, peerId);
+                }
+                
+                newPeers.set(peerId, peerData);
+                return newPeers;
+            });
         });
     };
     
@@ -261,7 +301,7 @@ const App: React.FC = () => {
 
         setIsConnected(false);
         setLocalStream(null);
-        setRemoteStreams(new Map());
+        setRemotePeers(new Map());
         setConsumers(new Map());
         setSpeakingStates(new Map());
     };
@@ -288,7 +328,6 @@ const App: React.FC = () => {
         }
     };
 
-
     return (
         <div className="app-container">
             <header className="header">
@@ -302,34 +341,42 @@ const App: React.FC = () => {
 
             <div className="videos-container">
                 <div className={`video-wrapper ${localStream ? 'active' : ''} ${speakingStates.get('local') ? 'speaking' : ''}`}>
-                    {isCameraOn && localStream ? (
+                    {isCameraOn && localStream?.getVideoTracks().length > 0 ? (
                         <video ref={localVideoRef} className="local-video" autoPlay playsInline muted />
                     ) : <AvatarIcon />}
                     <div className="video-label">Вы</div>
                 </div>
-                {Array.from(remoteStreams.entries())
-                    .filter(([, data]) => data.mediaType === 'video')
-                    .map(([producerId, { stream }]) => (
-                    <div key={producerId} className={`video-wrapper active ${speakingStates.get(consumers.get(producerId)?.producerId) ? 'speaking' : ''}`}>
-                       <video 
-                            ref={(videoEl) => {
-                                if (videoEl) videoEl.srcObject = stream;
-                            }}
-                            autoPlay 
-                            playsInline 
-                        />
-                         <div className="video-label">Собеседник</div>
+                {Array.from(remotePeers.entries()).map(([peerId, peerData]) => (
+                    <div key={peerId} className={`video-wrapper active ${speakingStates.get(peerId) ? 'speaking' : ''}`}>
+                        {peerData.videoStream ? (
+                            <video
+                                ref={(videoEl) => {
+                                    if (videoEl) videoEl.srcObject = peerData.videoStream;
+                                }}
+                                autoPlay
+                                playsInline
+                            />
+                        ) : (
+                            <AvatarIcon />
+                        )}
+                        <div className="video-label">Собеседник</div>
                     </div>
                 ))}
             </div>
 
-            {/* Invisible audio elements */}
-            {Array.from(remoteStreams.entries())
-                .filter(([, data]) => data.mediaType === 'audio')
-                .map(([producerId, { stream }]) => (
-                    <audio key={producerId} ref={audioEl => { if(audioEl) audioEl.srcObject = stream; }} autoPlay playsInline />
+            {/* Invisible audio elements for remote peers */}
+            {Array.from(remotePeers.values())
+                .filter(peerData => peerData.audioStream && peerData.audioProducerId)
+                .map(peerData => (
+                    <audio 
+                        key={peerData.audioProducerId!} 
+                        ref={audioEl => { if(audioEl) audioEl.srcObject = peerData.audioStream; }} 
+                        autoPlay 
+                        playsInline 
+                    />
                 ))
             }
+
 
             <div className="controls-container">
                 {!isConnected ? (
