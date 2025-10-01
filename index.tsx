@@ -37,7 +37,7 @@ const App: React.FC = () => {
                 localVideoRef.current.srcObject = stream;
             }
 
-            const socket = io({ path: '/ws/' });
+            const socket = io({ path: '/socket.io/' });
             socketRef.current = socket;
 
             socket.on('connect', async () => {

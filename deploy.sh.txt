@@ -52,14 +52,22 @@ server {
 }
 EOF
 ln -s -f /etc/nginx/sites-available/rugram /etc/nginx/sites-enabled/
-cp "$PROJECT_DIR/dist/index.html" "$WEB_ROOT/"
+# Копируем временный index.html для Certbot
+cp "$PROJECT_DIR/index.html" "$WEB_ROOT/"
 systemctl restart nginx
 # Получаем сертификат
 certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m $EMAIL --redirect
 
 echo "--- [Шаг 4/5] Финальная настройка Nginx и копирование файлов сайта ---"
-# Копируем все собранные файлы
-cp -r "$PROJECT_DIR/dist/." "$WEB_ROOT/"
+# Создаем нужные директории и копируем файлы
+mkdir -p "$WEB_ROOT/dist"
+cp "$PROJECT_DIR/dist/bundle.js" "$WEB_ROOT/dist/"
+cp "$PROJECT_DIR/index.html" "$WEB_ROOT/"
+
+# --- ВНЕДРЕНИЕ КЭШ-БАСТИНГА ---
+# Добавляем к <script> уникальный параметр, чтобы браузер не кэшировал старую версию
+TIMESTAMP=$(date +%s)
+sed -i "s|/dist/bundle.js|/dist/bundle.js?v=$TIMESTAMP|g" "$WEB_ROOT/index.html"
 
 # Финальный, надежный конфиг Nginx с HTTPS и прокси для Socket.IO
 cat > /etc/nginx/sites-available/rugram <<EOF
@@ -84,12 +92,13 @@ server {
     }
 
     # Надежная конфигурация прокси для WebSocket (Mediasoup)
-    location /ws/ {
+    location /socket.io/ {
         proxy_pass http://127.0.0.1:$MEDIA_SERVER_PORT;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "Upgrade";
         proxy_set_header Host \$host;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_cache_bypass \$http_upgrade;
     }
 }
