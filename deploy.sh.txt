@@ -1,0 +1,106 @@
+#!/bin/bash
+set -e # Останавливать скрипт при любой ошибке
+
+# --- НАСТРОЙКИ ---
+DOMAIN="rugram.duckdns.org"
+EMAIL="ВАШ_EMAIL@example.com" # ВАЖНО: Укажите ваш настоящий email
+REPO_URL="https://github.com/goida228top/Telegram"
+PROJECT_DIR="/opt/rugram"
+WEB_ROOT="/var/www/rugram"
+SERVER_FILENAME="server.js" # Стандартное, правильное имя файла
+MEDIA_SERVER_PORT="3001"
+
+echo "--- [Шаг 1/5] Установка/обновление программ ---"
+apt-get update
+# Устанавливаем утилиты для сборки mediasoup
+apt-get install -y git nginx python3 build-essential curl certbot python3-certbot-nginx
+
+# Устанавливаем Node.js v20 для совместимости
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+apt-get install -y nodejs
+
+# Устанавливаем PM2 глобально
+npm install pm2 -g
+
+echo "--- [Шаг 2/5] Загрузка и сборка проекта ---"
+if [ -d "$PROJECT_DIR" ]; then
+  echo "Обновляем проект..."
+  cd "$PROJECT_DIR"
+  git pull
+else
+  echo "Клонируем репозиторий..."
+  git clone "$REPO_URL" "$PROJECT_DIR"
+fi
+cd "$PROJECT_DIR"
+# Устанавливаем зависимости из вашего package.json
+npm install
+# Собираем приложение
+npm run build
+
+echo "--- [Шаг 3/5] Подготовка Nginx и получение SSL-сертификата ---"
+mkdir -p "$WEB_ROOT"
+# Временный конфиг для http, чтобы Certbot прошел проверку
+cat > /etc/nginx/sites-available/rugram <<EOF
+server {
+    listen 80;
+    server_name $DOMAIN;
+    root $WEB_ROOT;
+    index index.html;
+    location / {
+        try_files \$uri /index.html;
+    }
+}
+EOF
+ln -s -f /etc/nginx/sites-available/rugram /etc/nginx/sites-enabled/
+cp "$PROJECT_DIR/dist/index.html" "$WEB_ROOT/"
+systemctl restart nginx
+# Получаем сертификат
+certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m $EMAIL --redirect
+
+echo "--- [Шаг 4/5] Финальная настройка Nginx и копирование файлов сайта ---"
+# Копируем все собранные файлы
+cp -r "$PROJECT_DIR/dist/." "$WEB_ROOT/"
+
+# Финальный, надежный конфиг Nginx с HTTPS и прокси для Socket.IO
+cat > /etc/nginx/sites-available/rugram <<EOF
+server {
+    listen 80;
+    server_name $DOMAIN;
+    location / {
+        return 301 https://\$host\$request_uri;
+    }
+}
+server {
+    listen 443 ssl http2;
+    server_name $DOMAIN;
+    ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
+
+    root $WEB_ROOT;
+    index index.html;
+
+    location / {
+        try_files \$uri /index.html;
+    }
+
+    # Надежная конфигурация прокси для Socket.IO (Mediasoup)
+    location /socket.io/ {
+        proxy_pass http://127.0.0.1:$MEDIA_SERVER_PORT;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "Upgrade";
+        proxy_set_header Host \$host;
+        proxy_cache_bypass \$http_upgrade;
+    }
+}
+EOF
+systemctl restart nginx
+
+echo "--- [Шаг 5/5] Запуск/перезапуск медиа-сервера ---"
+cd "$PROJECT_DIR"
+# Надежная команда для запуска/перезапуска сервера
+pm2 restart rugram-media-server || pm2 start $SERVER_FILENAME --name rugram-media-server
+pm2 save
+
+echo "--- ГОТОВО! ---"
+echo "Сайт должен быть доступен по адресу: https://$DOMAIN"
