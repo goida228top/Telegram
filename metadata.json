@@ -1,0 +1,8 @@
+{
+  "description": "A simple Peer-to-Peer (P2P) video calling application that allows users to connect directly without a central server.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ],
+  "name": "App"
+}
