@@ -1,55 +1,76 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ru">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>RuGram Call</title>
   <style>
     :root {
-      --background-color: #1a1a2e;
-      --primary-color: #16213e;
-      --secondary-color: #0f3460;
-      --accent-color: #e94560;
-      --text-color: #ffffff;
-      --border-radius: 8px;
+      --background-color: #121212;
+      --surface-color: #1e1e1e;
+      --primary-color: #bb86fc;
+      --secondary-color: #03dac6;
+      --text-color: #e0e0e0;
+      --error-color: #cf6679;
+      --border-radius: 12px;
+      --font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    }
+    *, *::before, *::after {
+        box-sizing: border-box;
     }
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+      font-family: var(--font-family);
       margin: 0;
       background-color: var(--background-color);
       color: var(--text-color);
       display: flex;
       justify-content: center;
-      align-items: center;
+      align-items: flex-start;
       min-height: 100vh;
-      padding: 10px;
-      box-sizing: border-box;
+      padding: 2rem;
     }
     #root {
       width: 100%;
       max-width: 1200px;
-      box-sizing: border-box;
     }
     .app-container {
       display: flex;
       flex-direction: column;
-      gap: 20px;
-      background-color: var(--primary-color);
-      padding: 20px;
-      border-radius: var(--border-radius);
-      box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+      gap: 2rem;
     }
     .header {
       text-align: center;
     }
     .header h1 {
+      margin: 0 0 0.5rem 0;
+      font-size: 2.5rem;
+      color: var(--primary-color);
+    }
+    .header p {
       margin: 0;
-      color: var(--accent-color);
+      font-size: 1.1rem;
+      color: #9e9e9e;
+    }
+    .status {
+      text-align: center;
+      font-size: 1rem;
+      padding: 0.75rem 1rem;
+      background-color: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: var(--border-radius);
+    }
+    .status-connected {
+        color: var(--secondary-color);
+        border-color: var(--secondary-color);
+    }
+    .status-disconnected {
+        color: var(--error-color);
+        border-color: var(--error-color);
     }
     .videos-container {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-      gap: 20px;
+      gap: 2rem;
     }
     .video-wrapper {
       position: relative;
@@ -57,92 +78,101 @@
       border-radius: var(--border-radius);
       overflow: hidden;
       aspect-ratio: 16 / 9;
+      border: 2px solid transparent;
+      transition: border-color 0.3s;
+    }
+    .video-wrapper.active {
+        border-color: var(--secondary-color);
     }
     .video-wrapper video {
       width: 100%;
       height: 100%;
       object-fit: cover;
-      transform: scaleX(-1); /* Mirror self-view */
+    }
+    .local-video {
+        transform: scaleX(-1); /* Mirror self-view */
     }
     .video-label {
       position: absolute;
-      bottom: 10px;
-      left: 10px;
-      background-color: rgba(0,0,0,0.6);
-      padding: 5px 10px;
-      border-radius: 5px;
-      font-size: 0.9em;
+      bottom: 1rem;
+      left: 1rem;
+      background-color: rgba(0,0,0,0.7);
+      padding: 0.4rem 0.8rem;
+      border-radius: 8px;
+      font-size: 0.9rem;
+      font-weight: 500;
     }
-    .controls-container, .sdp-container {
+    .controls-container {
       display: flex;
-      flex-direction: column;
-      gap: 15px;
-      background-color: var(--secondary-color);
-      padding: 15px;
+      justify-content: center;
+      background-color: var(--surface-color);
+      padding: 1.5rem;
       border-radius: var(--border-radius);
     }
-    .button-group {
+    .room-controls, .call-controls {
       display: flex;
-      gap: 10px;
-      flex-wrap: wrap;
+      gap: 1rem;
+      width: 100%;
+      max-width: 500px;
+    }
+    .call-controls {
+        justify-content: center;
+    }
+    input[type="text"] {
+      flex-grow: 1;
+      padding: 0.75rem 1rem;
+      background-color: var(--background-color);
+      color: var(--text-color);
+      border: 1px solid #424242;
+      border-radius: var(--border-radius);
+      font-size: 1rem;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    input[type="text"]:focus {
+        outline: none;
+        border-color: var(--primary-color);
+        box-shadow: 0 0 0 3px rgba(187, 134, 252, 0.2);
     }
     button {
-      flex-grow: 1;
-      padding: 12px 20px;
-      font-size: 1em;
+      padding: 0.75rem 1.5rem;
+      font-size: 1rem;
       font-weight: bold;
       border: none;
       border-radius: var(--border-radius);
       cursor: pointer;
-      background-color: var(--accent-color);
-      color: var(--text-color);
-      transition: background-color 0.2s;
-      min-width: 120px;
+      color: #000;
+      background-color: var(--primary-color);
+      transition: transform 0.2s, background-color 0.2s;
     }
     button:hover:not(:disabled) {
-      background-color: #ff5c77;
+      background-color: #ce93d8;
+      transform: translateY(-2px);
     }
     button:disabled {
-      background-color: #555;
+      background-color: #424242;
+      color: #757575;
       cursor: not-allowed;
     }
-    textarea {
-      width: 100%;
-      box-sizing: border-box;
-      min-height: 100px;
-      background-color: var(--background-color);
-      color: var(--text-color);
-      border: 1px solid var(--primary-color);
-      border-radius: var(--border-radius);
-      padding: 10px;
-      font-family: monospace;
-      resize: vertical;
+    .btn-end-call {
+        background-color: var(--error-color);
+        color: #000;
     }
-    .status {
-      text-align: center;
-      font-size: 1.1em;
-      font-weight: bold;
-      padding: 10px;
-      background-color: var(--secondary-color);
-      border-radius: var(--border-radius);
-    }
-    label {
-      font-weight: bold;
-      margin-bottom: -5px;
+    .btn-end-call:hover:not(:disabled) {
+        background-color: #ff8a80;
     }
   </style>
 <script type="importmap">
 {
   "imports": {
-    "react/": "https://aistudiocdn.com/react@^19.1.1/",
     "react": "https://aistudiocdn.com/react@^19.1.1",
-    "react-dom/": "https://aistudiocdn.com/react-dom@^19.1.1/"
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.1.1/",
+    "react/": "https://aistudiocdn.com/react@^19.1.1/"
   }
 }
 </script>
 </head>
 <body>
   <div id="root"></div>
-  <script type="module" src="/index.tsx"></script>
+  <script src="dist/bundle.js"></script>
 </body>
 </html>

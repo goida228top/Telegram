@@ -1,23 +1,15 @@
-// RuGram Secure Signaling Server
-// This server uses WSS (WebSocket Secure) to allow connections from HTTPS pages.
+// RuGram Signaling Server
+// Nginx handles SSL, so this server only needs to run a simple WebSocket server.
 
-const https = require('https');
-const fs = require('fs');
 const WebSocket = require('ws');
 
-// Create an HTTPS server that reads your SSL certificate and key
-const server = https.createServer({
-  cert: fs.readFileSync('cert.pem'),
-  key: fs.readFileSync('key.pem')
-});
-
-// Attach the WebSocket server to the HTTPS server
-const wss = new WebSocket.Server({ server });
+// Create a WebSocket server on localhost, port 8080
+const wss = new WebSocket.Server({ host: '127.0.0.1', port: 8080 });
 
 // Store rooms and clients. A room can have at most 2 clients.
 const rooms = {};
 
-console.log('Secure Signaling server started on port 8080...');
+console.log('Signaling server started on ws://127.0.0.1:8080...');
 
 wss.on('connection', ws => {
     console.log('Client connected');
@@ -99,6 +91,3 @@ wss.on('connection', ws => {
         console.error('WebSocket error:', error);
     });
 });
-
-// Start the HTTPS server
-server.listen(8080);

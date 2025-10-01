@@ -1,9 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { createRoot } from 'react-dom/client';
 
-// IMPORTANT: Replace with your server's domain or IP address.
-// Using wss:// (WebSocket Secure) to match the secure HTTPS origin.
-const SIGNALING_SERVER_URL = `wss://rugram.duckdns.org:8080`;
+// URL указывает на прокси Nginx, который обрабатывает SSL и перенаправляет на сервер.
+const SIGNALING_SERVER_URL = `wss://rugram.duckdns.org/ws/`;
 
 const App: React.FC = () => {
     const [localStream, setLocalStream] = useState<MediaStream | null>(null);
@@ -11,11 +10,6 @@ const App: React.FC = () => {
     const [isMuted, setIsMuted] = useState(false);
     const [isCameraOff, setIsCameraOff] = useState(false);
     const [roomName, setRoomName] = useState('');
-    
-    // 'idle': Start screen, not connected to signaling server
-    // 'waiting': Connected to room, waiting for peer
-    // 'connecting': Peer joined, WebRTC connection in progress
-    // 'connected': Call is active
     const [callState, setCallState] = useState<'idle' | 'waiting' | 'connecting' | 'connected'>('idle');
     const [connectionStatus, setConnectionStatus] = useState<string>('Disconnected');
     
@@ -41,7 +35,7 @@ const App: React.FC = () => {
                 }
             } catch (error) {
                 console.error('Error accessing media devices.', error);
-                alert('Could not access camera and microphone. Please allow permissions.');
+                alert('Не удалось получить доступ к камере и микрофону. Пожалуйста, разрешите доступ.');
             }
         };
         startMedia();
@@ -94,7 +88,6 @@ const App: React.FC = () => {
     const handleSignalingData = async (data: any) => {
         switch (data.type) {
             case 'ready':
-                // The other user is ready, so the creator of the room sends the offer
                 setCallState('connecting');
                 const pc = initializePeerConnection();
                 const offer = await pc.createOffer();
@@ -102,7 +95,6 @@ const App: React.FC = () => {
                 wsRef.current?.send(JSON.stringify({ type: 'offer', sdp: pc.localDescription }));
                 break;
             case 'offer':
-                // The user joining the room receives the offer
                 setCallState('connecting');
                 const peerConnection = initializePeerConnection();
                 await peerConnection.setRemoteDescription(new RTCSessionDescription(data.sdp));
@@ -111,14 +103,13 @@ const App: React.FC = () => {
                 wsRef.current?.send(JSON.stringify({ type: 'answer', sdp: peerConnection.localDescription }));
                 break;
             case 'answer':
-                // The room creator receives the answer
                 await peerConnectionRef.current?.setRemoteDescription(new RTCSessionDescription(data.sdp));
                 break;
             case 'ice-candidate':
                 await peerConnectionRef.current?.addIceCandidate(new RTCIceCandidate(data.candidate));
                 break;
             case 'full':
-                alert('Room is full.');
+                alert('Комната заполнена.');
                 setCallState('idle');
                 break;
             default:
@@ -127,8 +118,8 @@ const App: React.FC = () => {
     };
 
     const connectToSignaling = () => {
-        if (!roomName) {
-            alert('Please enter a room name.');
+        if (!roomName.trim()) {
+            alert('Пожалуйста, введите название комнаты.');
             return;
         }
 
@@ -148,13 +139,13 @@ const App: React.FC = () => {
         ws.onclose = () => {
             if (callState !== 'idle') {
                 endCall();
-                alert('Connection to server lost.');
+                alert('Соединение с сервером потеряно.');
             }
         };
 
         ws.onerror = (error) => {
             console.error('WebSocket Error:', error);
-            alert('Failed to connect to the signaling server. Make sure the server is running and accessible.');
+            alert('Не удалось подключиться к сигнальному серверу. Убедитесь, что сервер запущен и доступен.');
             setCallState('idle');
         };
     };
@@ -171,50 +162,54 @@ const App: React.FC = () => {
     };
 
     const toggleMute = () => {
-        localStream?.getAudioTracks().forEach(track => {
-            track.enabled = !track.enabled;
-        });
-        setIsMuted(prev => !prev);
+        if (localStream) {
+            const newMutedState = !isMuted;
+            setIsMuted(newMutedState);
+            localStream.getAudioTracks().forEach(track => {
+                track.enabled = !newMutedState;
+            });
+        }
     };
 
     const toggleCamera = () => {
-        localStream?.getVideoTracks().forEach(track => {
-            track.enabled = !track.enabled;
-        });
-        setIsCameraOff(prev => !prev);
+        if (localStream) {
+            const newCameraOffState = !isCameraOff;
+            setIsCameraOff(newCameraOffState);
+            localStream.getVideoTracks().forEach(track => {
+                track.enabled = !newCameraOffState;
+            });
+        }
     };
-
-    const renderConnectionSteps = () => {
+    
+    const renderConnectionStep = () => {
         switch (callState) {
             case 'idle':
                 return (
-                    <>
-                        <h2>Start or Join a Call</h2>
-                        <p>Enter a room name to create or join a call.</p>
+                    <div className="room-controls">
                         <input
                             type="text"
+                            placeholder="Введите название комнаты"
                             value={roomName}
                             onChange={(e) => setRoomName(e.target.value)}
-                            placeholder="Enter room name"
                             aria-label="Room Name"
                         />
-                        <div className="button-group">
-                            <button onClick={connectToSignaling} disabled={!localStream || !roomName}>Create / Join Room</button>
-                        </div>
-                    </>
+                        <button onClick={connectToSignaling} disabled={!localStream || !roomName.trim()}>
+                            Войти
+                        </button>
+                    </div>
                 );
             case 'waiting':
-                return (
-                    <>
-                        <h2>Waiting for another user...</h2>
-                        <p>You are in room: <strong>{roomName}</strong></p>
-                        <p>Share this room name with the person you want to call.</p>
-                    </>
-                );
+                return <p>Ожидание другого пользователя в комнате: <strong>{roomName}</strong></p>;
             case 'connecting':
-                 return <h2>Connecting...</h2>;
+                return <p>Соединение...</p>;
             case 'connected':
-                return <h2>Call in Progress</h2>;
+                return (
+                     <div className="call-controls">
+                        <button onClick={toggleMute}>{isMuted ? 'Вкл. звук' : 'Выкл. звук'}</button>
+                        <button onClick={toggleCamera}>{isCameraOff ? 'Вкл. камеру' : 'Выкл. камеру'}</button>
+                        <button onClick={endCall} className="btn-end-call">Завершить звонок</button>
+                    </div>
+                )
             default:
                 return null;
         }
@@ -224,39 +219,26 @@ const App: React.FC = () => {
         <div className="app-container">
             <header className="header">
                 <h1>RuGram Call</h1>
-                <p>Simple Peer-to-Peer Calling</p>
+                <p>Безопасные видеозвонки</p>
             </header>
-            <div className="status" aria-live="polite">
-                Connection Status: <strong>{connectionStatus}</strong>
-            </div>
-            <div className="videos-container">
-                <div className="video-wrapper">
-                    <video ref={localVideoRef} autoPlay playsInline muted />
-                    <div className="video-label">You</div>
-                </div>
-                <div className="video-wrapper">
-                    <video ref={remoteVideoRef} autoPlay playsInline />
-                    <div className="video-label">Remote</div>
-                </div>
-            </div>
 
-            <div className="controls-container">
-                <h3>Call Controls</h3>
-                <div className="button-group">
-                    <button onClick={toggleMute} disabled={!localStream}>
-                        {isMuted ? 'Unmute' : 'Mute'}
-                    </button>
-                    <button onClick={toggleCamera} disabled={!localStream}>
-                        {isCameraOff ? 'Camera On' : 'Camera Off'}
-                    </button>
-                    <button onClick={endCall} disabled={callState === 'idle'}>
-                        End Call
-                    </button>
+            <div className={`status ${connectionStatus === 'connected' ? 'status-connected' : 'status-disconnected'}`}>
+                ICE Status: <strong>{connectionStatus}</strong>
+            </div>
+            
+            <div className="videos-container">
+                <div className={`video-wrapper ${localStream ? 'active' : ''}`}>
+                    <video ref={localVideoRef} className="local-video" autoPlay playsInline muted />
+                    <div className="video-label">Вы</div>
+                </div>
+                <div className={`video-wrapper ${remoteStream ? 'active' : ''}`}>
+                    <video ref={remoteVideoRef} autoPlay playsInline style={{ display: remoteStream ? 'block' : 'none' }} />
+                     {remoteStream && <div className="video-label">Собеседник</div>}
                 </div>
             </div>
             
-            <div className="sdp-container">
-                {renderConnectionSteps()}
+            <div className="controls-container">
+                {renderConnectionStep()}
             </div>
         </div>
     );
