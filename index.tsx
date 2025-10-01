@@ -183,43 +183,44 @@ const App: React.FC = () => {
                     await device.load({ routerRtpCapabilities });
                     deviceRef.current = device;
 
-                    // Create Send Transport
-                    socket.emit('createWebRtcTransport', { isSender: true }, async (params: any) => {
-                        const transport = device.createSendTransport(params);
-                        sendTransportRef.current = transport;
+                    // 1. Join room to create Peer on server
+                    socket.emit('joinRoom', { roomName }, async (existingProducers: any[]) => {
 
-                        transport.on('connect', ({ dtlsParameters }, callback) => {
-                            socket.emit('connectTransport', { transportId: transport.id, dtlsParameters }, callback);
-                        });
+                        // 2. Create Send Transport
+                        socket.emit('createWebRtcTransport', { isSender: true }, async (sendParams: any) => {
+                            const sendTransport = device.createSendTransport(sendParams);
+                            sendTransportRef.current = sendTransport;
 
-                        transport.on('produce', async ({ kind, rtpParameters, appData }, callback) => {
-                            socket.emit('produce', { transportId: transport.id, kind, rtpParameters, appData }, ({ id }: { id: string }) => {
-                                callback({ id });
+                            sendTransport.on('connect', ({ dtlsParameters }, callback, errback) => {
+                                socket.emit('connectTransport', { transportId: sendTransport.id, dtlsParameters }, callback);
+                            });
+
+                            sendTransport.on('produce', async ({ kind, rtpParameters, appData }, callback, errback) => {
+                                socket.emit('produce', { transportId: sendTransport.id, kind, rtpParameters, appData }, ({ id }: { id: string }) => {
+                                    callback({ id });
+                                });
+                            });
+
+                             // 3. Create Recv Transport
+                            socket.emit('createWebRtcTransport', { isSender: false }, async (recvParams: any) => {
+                                const recvTransport = device.createRecvTransport(recvParams);
+                                recvTransportRef.current = recvTransport;
+
+                                recvTransport.on('connect', ({ dtlsParameters }, callback, errback) => {
+                                    socket.emit('connectTransport', { transportId: recvTransport.id, dtlsParameters }, callback);
+                                });
+
+                                // 4. We are ready to produce and consume
+                                setStatus(`В комнате: ${roomName}`);
+                                setIsConnected(true);
+                                
+                                await produceStream(stream);
+
+                                for (const producerInfo of existingProducers) {
+                                   consume(producerInfo.id, producerInfo.appData.mediaType, producerInfo.peerId);
+                                }
                             });
                         });
-                    });
-
-                    // Create Recv Transport
-                    socket.emit('createWebRtcTransport', { isSender: false }, async (params: any) => {
-                        const transport = device.createRecvTransport(params);
-                        recvTransportRef.current = transport;
-
-                        transport.on('connect', ({ dtlsParameters }, callback) => {
-                            socket.emit('connectTransport', { transportId: transport.id, dtlsParameters }, callback);
-                        });
-                    });
-                    
-                    // Join Room and then Produce
-                    socket.emit('joinRoom', { roomName }, async (existingProducers: any[]) => {
-                        setStatus(`В комнате: ${roomName}`);
-                        setIsConnected(true);
-                        
-                        // CRITICAL FIX: Produce our stream ONLY AFTER joining the room
-                        await produceStream(stream);
-
-                        for (const producerInfo of existingProducers) {
-                           consume(producerInfo.id, producerInfo.appData.mediaType, producerInfo.peerId);
-                        }
                     });
                 });
             });
@@ -302,8 +303,12 @@ const App: React.FC = () => {
     };
 
     const consume = async (producerId: string, mediaType: 'video' | 'audio', peerId: string) => {
-        const { rtpCapabilities } = deviceRef.current!;
-        socketRef.current!.emit('consume', { producerId, rtpCapabilities }, async (params: any) => {
+        if (!deviceRef.current || !socketRef.current || !recvTransportRef.current) {
+            console.error("Cannot consume, refs not ready");
+            return;
+        }
+        const { rtpCapabilities } = deviceRef.current;
+        socketRef.current.emit('consume', { producerId, rtpCapabilities }, async (params: any) => {
             if (params.error) {
                 console.error('Ошибка создания консьюмера:', params.error);
                 return;
@@ -359,6 +364,7 @@ const App: React.FC = () => {
         setStatus('Отключено');
         setRoomName('');
     };
+
 
     const toggleMic = () => {
         if (localStream) {
