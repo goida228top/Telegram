@@ -10,9 +10,15 @@ type RemoteStreamData = {
     isMuted?: boolean;
 };
 
+type AnalysisData = {
+    context: AudioContext;
+    source: MediaStreamAudioSourceNode;
+    animationFrameId: number;
+};
+
 // --- SVG Icons for Controls ---
 const MicOnIcon = () => (<svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 0 24 24" width="24px" fill="currentColor"><path d="M0 0h24v24H0V0z" fill="none"/><path d="M12 14c1.66 0 2.99-1.34 2.99-3L15 5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c3.28-.48 6-3.3 6-6.72h-1.7z"/></svg>);
-const MicOffIcon = () => (<svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 0 24 24" width="24px" fill="currentColor"><path d="M0 0h24v24H0V0z" fill="none"/><path d="M19 11h-1.7c0 .74-.16 1.43-.43 2.05l1.23 1.23c.56-.98.9-2.09.9-3.28zm-4.02.17c0-.06.02-.12.02-.17V5c0-1.66-1.34-3-3-3S9 3.34 9 5v.18l5.98 5.99zM4.27 3L3 4.27l6.01 6.01V11c0 1.66 1.33 3 2.99 3 .22 0 .44-.03.65-.08l1.66 1.66c-.71.33-1.5.52-2.31.52-2.76 0-5.3-2.1-5.3-5.1H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c.91-.13 1.77-.45 2.55-.9L19.73 21 21 19.73 4.27 3z"/></svg>);
+const MicOffIcon = () => (<svg xmlns="http://www.w.org/2000/svg" height="24px" viewBox="0 0 24 24" width="24px" fill="currentColor"><path d="M0 0h24v24H0V0z" fill="none"/><path d="M19 11h-1.7c0 .74-.16 1.43-.43 2.05l1.23 1.23c.56-.98.9-2.09.9-3.28zm-4.02.17c0-.06.02-.12.02-.17V5c0-1.66-1.34-3-3-3S9 3.34 9 5v.18l5.98 5.99zM4.27 3L3 4.27l6.01 6.01V11c0 1.66 1.33 3 2.99 3 .22 0 .44-.03.65-.08l1.66 1.66c-.71.33-1.5.52-2.31.52-2.76 0-5.3-2.1-5.3-5.1H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c.91-.13 1.77-.45 2.55-.9L19.73 21 21 19.73 4.27 3z"/></svg>);
 const CamOnIcon = () => (<svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 0 24 24" width="24px" fill="currentColor"><path d="M0 0h24v24H0V0z" fill="none"/><path d="M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z"/></svg>);
 const CamOffIcon = () => (<svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 0 24 24" width="24px" fill="currentColor"><path d="M0 0h24v24H0V0z" fill="none"/><path d="M21 6.5l-4 4V7c0-.55-.45-1-1-1H9.82L21 17.18V6.5zM3.27 2L2 3.27 4.73 6H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.21 0 .39-.08.55-.18L19.73 21 21 19.73 3.27 2z"/></svg>);
 const AvatarIcon = () => (<svg className="avatar-icon" xmlns="http://www.w3.org/2000/svg" enableBackground="new 0 0 24 24" height="24px" viewBox="0 0 24 24" width="24px" fill="currentColor"><g><rect fill="none" height="24" width="24"/></g><g><path d="M12,12c2.21,0,4-1.79,4-4s-1.79-4-4-4S8,5.79,8,8S9.79,12,12,12z M12,14c-2.67,0-8,1.34-8,4v2h16v-2 C20,15.34,14.67,14,12,14z"/></g></svg>);
@@ -27,6 +33,7 @@ const App: React.FC = () => {
     const [status, setStatus] = useState('Отключено');
     const [isMicOn, setIsMicOn] = useState(true);
     const [isCameraOn, setIsCameraOn] = useState(true);
+    const [speakingStates, setSpeakingStates] = useState<Map<string, boolean>>(new Map());
 
     const socketRef = useRef<Socket | null>(null);
     const deviceRef = useRef<Device | null>(null);
@@ -35,6 +42,57 @@ const App: React.FC = () => {
     const videoProducerRef = useRef<Producer | null>(null);
     const audioProducerRef = useRef<Producer | null>(null);
     const localVideoRef = useRef<HTMLVideoElement>(null);
+    const analysisRefs = useRef<Map<string, AnalysisData>>(new Map());
+
+    const setupAudioAnalysis = (stream: MediaStream, id: string) => {
+        const audioTrack = stream.getAudioTracks()[0];
+        if (!audioTrack) return;
+
+        const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+        const analyser = audioContext.createAnalyser();
+        analyser.fftSize = 512;
+        analyser.smoothingTimeConstant = 0.5;
+
+        const source = audioContext.createMediaStreamSource(stream);
+        source.connect(analyser);
+
+        const dataArray = new Uint8Array(analyser.frequencyBinCount);
+        let animationFrameId: number;
+
+        const checkVolume = () => {
+            analyser.getByteFrequencyData(dataArray);
+            const average = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
+            const isSpeaking = average > 20; // Порог чувствительности (0-255)
+
+            setSpeakingStates(prev => {
+                if (prev.get(id) === isSpeaking) return prev;
+                const newStates = new Map(prev);
+                newStates.set(id, isSpeaking);
+                return newStates;
+            });
+
+            animationFrameId = requestAnimationFrame(checkVolume);
+        };
+        animationFrameId = requestAnimationFrame(checkVolume);
+
+        analysisRefs.current.set(id, { context: audioContext, source, animationFrameId });
+    };
+
+    const stopAudioAnalysis = (id: string) => {
+        const analysisData = analysisRefs.current.get(id);
+        if (analysisData) {
+            cancelAnimationFrame(analysisData.animationFrameId);
+            analysisData.source.disconnect();
+            analysisData.context.close().catch(console.error);
+            analysisRefs.current.delete(id);
+        }
+        setSpeakingStates(prev => {
+            if (!prev.has(id)) return prev;
+            const newStates = new Map(prev);
+            newStates.delete(id);
+            return newStates;
+        });
+    };
 
     const joinRoom = async (callType: 'video' | 'audio') => {
         if (!roomName.trim()) {
@@ -42,25 +100,39 @@ const App: React.FC = () => {
             return;
         }
 
-        const videoEnabled = callType === 'video';
-        setIsCameraOn(videoEnabled);
-        setIsMicOn(true);
-
+        let stream: MediaStream;
+        let videoEnabled = callType === 'video';
+        
         setStatus('Подключение...');
         try {
-            const stream = await navigator.mediaDevices.getUserMedia({
-                video: { width: { ideal: 1280 }, height: { ideal: 720 } },
-                audio: { echoCancellation: true, noiseSuppression: true }
-            });
-
-            if (!videoEnabled) {
-                stream.getVideoTracks()[0].enabled = false;
+            if (videoEnabled) {
+                try {
+                    stream = await navigator.mediaDevices.getUserMedia({
+                        video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+                        audio: { echoCancellation: true, noiseSuppression: true }
+                    });
+                } catch (err: any) {
+                    console.warn('Не удалось получить видео, пробую только аудио:', err);
+                    if (err.name === 'NotReadableError' || err.name === 'NotFoundError' || err.name === 'OverconstrainedError') {
+                        setStatus('Камера недоступна, пробуем аудио...');
+                        videoEnabled = false;
+                        stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+                    } else {
+                        throw err;
+                    }
+                }
+            } else {
+                stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
             }
-
+            
+            setIsCameraOn(videoEnabled);
+            setIsMicOn(true);
+            
             setLocalStream(stream);
             if (localVideoRef.current) {
                 localVideoRef.current.srcObject = stream;
             }
+            setupAudioAnalysis(stream, 'local');
 
             const socket = io({ path: '/socket.io/' });
             socketRef.current = socket;
@@ -126,6 +198,7 @@ const App: React.FC = () => {
                     newRemoteStreams.delete(producerId);
                     setRemoteStreams(newRemoteStreams);
                 }
+                stopAudioAnalysis(producerId);
             });
 
             socket.on('disconnect', () => {
@@ -136,13 +209,15 @@ const App: React.FC = () => {
         } catch (error) {
             console.error('Не удалось получить доступ к камере или микрофону:', error);
             setStatus('Ошибка: нет доступа к камере/микрофону');
+            cleanUp();
         }
     };
     
     const produceStream = async (stream: MediaStream) => {
         const videoTrack = stream.getVideoTracks()[0];
         const audioTrack = stream.getAudioTracks()[0];
-        if (videoTrack) {
+        
+        if (isCameraOn && videoTrack) {
             videoProducerRef.current = await sendTransportRef.current!.produce({ track: videoTrack, appData: { mediaType: 'video' } });
         }
         if (audioTrack) {
@@ -164,32 +239,20 @@ const App: React.FC = () => {
             setConsumers(prev => new Map(prev).set(producerId, consumer));
 
             const { track } = consumer;
-
-            if (mediaType === 'video') {
-                track.onmute = () => {
-                    setRemoteStreams(prev => {
-                        const newStreams = new Map(prev);
-                        const data = newStreams.get(producerId);
-                        if (data) newStreams.set(producerId, { ...data, isMuted: true });
-                        return newStreams;
-                    });
-                };
-                track.onunmute = () => {
-                    setRemoteStreams(prev => {
-                        const newStreams = new Map(prev);
-                        const data = newStreams.get(producerId);
-                        if (data) newStreams.set(producerId, { ...data, isMuted: false });
-                        return newStreams;
-                    });
-                };
-            }
-
             const newStream = new MediaStream([track]);
+
             setRemoteStreams(prev => new Map(prev).set(producerId, { stream: newStream, mediaType, isMuted: consumer.track.muted }));
+
+            if (mediaType === 'audio') {
+                 setupAudioAnalysis(newStream, producerId);
+            }
         });
     };
     
     const cleanUp = () => {
+        stopAudioAnalysis('local');
+        analysisRefs.current.forEach((_, id) => stopAudioAnalysis(id));
+
         localStream?.getTracks().forEach(track => track.stop());
         socketRef.current?.disconnect();
         
@@ -200,6 +263,7 @@ const App: React.FC = () => {
         setLocalStream(null);
         setRemoteStreams(new Map());
         setConsumers(new Map());
+        setSpeakingStates(new Map());
     };
 
     const leaveRoom = () => {
@@ -217,7 +281,7 @@ const App: React.FC = () => {
     };
 
     const toggleCamera = () => {
-        if (localStream) {
+        if (localStream && localStream.getVideoTracks().length > 0) {
             const enabled = !isCameraOn;
             localStream.getVideoTracks()[0].enabled = enabled;
             setIsCameraOn(enabled);
@@ -237,25 +301,23 @@ const App: React.FC = () => {
             </div>
 
             <div className="videos-container">
-                <div className={`video-wrapper ${localStream ? 'active' : ''}`}>
-                    {isCameraOn ? (
+                <div className={`video-wrapper ${localStream ? 'active' : ''} ${speakingStates.get('local') ? 'speaking' : ''}`}>
+                    {isCameraOn && localStream ? (
                         <video ref={localVideoRef} className="local-video" autoPlay playsInline muted />
                     ) : <AvatarIcon />}
                     <div className="video-label">Вы</div>
                 </div>
                 {Array.from(remoteStreams.entries())
-                    .filter(([_, data]) => data.mediaType === 'video')
-                    .map(([producerId, { stream, isMuted }]) => (
-                    <div key={producerId} className={`video-wrapper active`}>
-                        {isMuted ? <AvatarIcon /> : (
-                           <video 
-                                ref={(videoEl) => {
-                                    if (videoEl) videoEl.srcObject = stream;
-                                }}
-                                autoPlay 
-                                playsInline 
-                            />
-                        )}
+                    .filter(([, data]) => data.mediaType === 'video')
+                    .map(([producerId, { stream }]) => (
+                    <div key={producerId} className={`video-wrapper active ${speakingStates.get(consumers.get(producerId)?.producerId) ? 'speaking' : ''}`}>
+                       <video 
+                            ref={(videoEl) => {
+                                if (videoEl) videoEl.srcObject = stream;
+                            }}
+                            autoPlay 
+                            playsInline 
+                        />
                          <div className="video-label">Собеседник</div>
                     </div>
                 ))}
@@ -263,7 +325,7 @@ const App: React.FC = () => {
 
             {/* Invisible audio elements */}
             {Array.from(remoteStreams.entries())
-                .filter(([_, data]) => data.mediaType === 'audio')
+                .filter(([, data]) => data.mediaType === 'audio')
                 .map(([producerId, { stream }]) => (
                     <audio key={producerId} ref={audioEl => { if(audioEl) audioEl.srcObject = stream; }} autoPlay playsInline />
                 ))
@@ -290,7 +352,7 @@ const App: React.FC = () => {
                         <button onClick={toggleMic} className={`btn-control ${isMicOn ? '' : 'toggled-off'}`} aria-label={isMicOn ? "Выключить микрофон" : "Включить микрофон"}>
                             {isMicOn ? <MicOnIcon /> : <MicOffIcon />}
                         </button>
-                         <button onClick={toggleCamera} className={`btn-control ${isCameraOn ? '' : 'toggled-off'}`} aria-label={isCameraOn ? "Выключить камеру" : "Включить камеру"}>
+                         <button onClick={toggleCamera} className={`btn-control ${isCameraOn ? '' : 'toggled-off'}`} aria-label={isCameraOn ? "Выключить камеру" : "Включить камеру"} disabled={!localStream?.getVideoTracks()[0]}>
                             {isCameraOn ? <CamOnIcon /> : <CamOffIcon />}
                         </button>
                         <button onClick={leaveRoom} className="btn-end-call" aria-label="Завершить звонок">
