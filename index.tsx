@@ -1,3 +1,4 @@
+
 import React, { useState, useRef, useEffect } from 'react';
 import { createRoot } from 'react-dom/client';
 import { io, Socket } from 'socket.io-client';
@@ -182,6 +183,7 @@ const App: React.FC = () => {
                     await device.load({ routerRtpCapabilities });
                     deviceRef.current = device;
 
+                    // Create Send Transport
                     socket.emit('createWebRtcTransport', { isSender: true }, async (params: any) => {
                         const transport = device.createSendTransport(params);
                         sendTransportRef.current = transport;
@@ -195,10 +197,9 @@ const App: React.FC = () => {
                                 callback({ id });
                             });
                         });
-
-                        await produceStream(stream);
                     });
 
+                    // Create Recv Transport
                     socket.emit('createWebRtcTransport', { isSender: false }, async (params: any) => {
                         const transport = device.createRecvTransport(params);
                         recvTransportRef.current = transport;
@@ -208,9 +209,14 @@ const App: React.FC = () => {
                         });
                     });
                     
-                    socket.emit('joinRoom', { roomName }, (existingProducers: any[]) => {
+                    // Join Room and then Produce
+                    socket.emit('joinRoom', { roomName }, async (existingProducers: any[]) => {
                         setStatus(`В комнате: ${roomName}`);
                         setIsConnected(true);
+                        
+                        // CRITICAL FIX: Produce our stream ONLY AFTER joining the room
+                        await produceStream(stream);
+
                         for (const producerInfo of existingProducers) {
                            consume(producerInfo.id, producerInfo.appData.mediaType, producerInfo.peerId);
                         }
@@ -280,6 +286,10 @@ const App: React.FC = () => {
     };
     
     const produceStream = async (stream: MediaStream) => {
+        if (!sendTransportRef.current) {
+            console.error("Send transport is not ready.");
+            return;
+        }
         const videoTrack = stream.getVideoTracks()[0];
         const audioTrack = stream.getAudioTracks()[0];
         
