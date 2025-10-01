@@ -7,6 +7,7 @@ const mediasoup = require('mediasoup');
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
+  path: '/ws/',
   cors: {
     origin: "*",
   },
