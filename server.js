@@ -1,21 +1,25 @@
+
 // --- Imports ---
 const express = require('express');
 const http = require('http');
+const path = require('path');
 const { Server } = require('socket.io');
 const mediasoup = require('mediasoup');
-const path = require('path');
 
 // --- Express App Setup ---
 const app = express();
 const httpServer = http.createServer(app);
 
-// Serve static files from the 'dist' directory and the root for index.html
-app.use(express.static(__dirname));
+// --- Serve static files (the frontend) ---
+// This is important for Nginx to correctly find the files
+app.use(express.static(path.join(__dirname)));
 app.use('/dist', express.static(path.join(__dirname, 'dist')));
 
+// Fallback to index.html for single-page application routing
 app.get('*', (req, res) => {
-    res.sendFile(path.join(__dirname, 'index.html'));
+  res.sendFile(path.join(__dirname, 'index.html'));
 });
+
 
 // --- Socket.IO Server ---
 const io = new Server(httpServer, {
@@ -42,7 +46,7 @@ const mediasoupConfig = {
     webRtcTransport: {
         listenIps: [{
             ip: process.env.MEDIASOUP_LISTEN_IP || '0.0.0.0',
-            announcedIp: process.env.MEDIASOUP_ANNOUNCED_IP || undefined
+            announcedIp: process.env.MEDIASOUP_ANNOUNCED_IP || null
         }],
         enableUdp: true,
         enableTcp: true,
@@ -64,13 +68,13 @@ const createWorker = async () => {
             rtcMaxPort: mediasoupConfig.worker.rtcMaxPort,
         });
         worker.on('died', () => {
-            console.error('mediasoup worker has died, exiting...');
+            console.error('!!! mediasoup worker has died, exiting...');
             setTimeout(() => process.exit(1), 2000);
         });
-        console.log(`-> mediasoup worker created [pid:${worker.pid}]`);
+        console.log(`-> Mediasoup worker created [pid:${worker.pid}]`);
         return worker;
     } catch (error) {
-        console.error('! Failed to create mediasoup worker:', error);
+        console.error('!!! Failed to create mediasoup worker:', error);
         process.exit(1);
     }
 };
@@ -78,7 +82,7 @@ const createWorker = async () => {
 const getOrCreateRoom = async (roomName) => {
     let room = rooms.get(roomName);
     if (!room) {
-        console.log(`-> creating room [name:${roomName}]`);
+        console.log(`-> Creating room [name:${roomName}]`);
         const router = await worker.createRouter({ mediaCodecs: mediasoupConfig.router.mediaCodecs });
         room = { router, peers: new Map() };
         rooms.set(roomName, room);
@@ -88,8 +92,32 @@ const getOrCreateRoom = async (roomName) => {
 
 // --- Socket.IO Connection Handling ---
 io.on('connection', (socket) => {
-    console.log(`-> client connected [id:${socket.id}]`);
+    console.log(`-> Client connected [id:${socket.id}]`);
     let currentRoomName = null;
+
+    const cleanupPeer = () => {
+        if (!currentRoomName) return;
+        const room = rooms.get(currentRoomName);
+        if (room) {
+            const peer = room.peers.get(socket.id);
+            if (peer) {
+                console.log(`-> Cleaning up for peer [id:${socket.id}]`);
+                for (const producer of peer.producers.values()) {
+                    producer.close();
+                    // Inform other clients that this producer is gone
+                    socket.to(currentRoomName).emit('producer-closed', { producerId: producer.id });
+                }
+            }
+            room.peers.delete(socket.id);
+            // If room is empty, close it
+            if (room.peers.size === 0) {
+                console.log(`-> Closing empty room [name:${currentRoomName}]`);
+                room.router.close();
+                rooms.delete(currentRoomName);
+            }
+        }
+    };
+
 
     socket.on('joinRoom', async ({ roomName }, callback) => {
         try {
@@ -101,22 +129,24 @@ io.on('connection', (socket) => {
             room.peers.set(socket.id, peer);
 
             const existingProducers = [];
-            for (const otherPeer of room.peers.values()) {
-                if (otherPeer !== peer) {
+            for (const [peerId, otherPeer] of room.peers.entries()) {
+                 if (peerId !== socket.id) {
                     for (const producer of otherPeer.producers.values()) {
-                        existingProducers.push({ id: producer.id, appData: producer.appData, peerId: Array.from(room.peers.entries()).find(([, p]) => p === otherPeer)[0] });
+                        existingProducers.push({ id: producer.id, appData: producer.appData, peerId: peerId });
                     }
                 }
             }
             callback(existingProducers);
         } catch (error) {
-            console.error(`! Error joining room [name:${roomName}]`, error);
+            console.error(`!!! Error joining room [name:${roomName}]`, error);
         }
     });
 
-    socket.on('getRouterRtpCapabilities', (data, callback) => {
-        const room = rooms.get(currentRoomName);
-        if (room) callback(room.router.rtpCapabilities);
+    socket.on('getRouterRtpCapabilities', async ({ roomName }, callback) => {
+        const room = await getOrCreateRoom(roomName);
+        if (room) {
+             callback(room.router.rtpCapabilities);
+        }
     });
 
     socket.on('createWebRtcTransport', async ({ isSender }, callback) => {
@@ -127,7 +157,7 @@ io.on('connection', (socket) => {
             room.peers.get(socket.id).transports.set(transport.id, transport);
             callback({ id: transport.id, iceParameters: transport.iceParameters, iceCandidates: transport.iceCandidates, dtlsParameters: transport.dtlsParameters });
         } catch (error) {
-            console.error('! Failed to create WebRTC transport:', error);
+            console.error('!!! Failed to create WebRTC transport:', error);
         }
     });
 
@@ -135,8 +165,12 @@ io.on('connection', (socket) => {
         const peer = rooms.get(currentRoomName)?.peers.get(socket.id);
         const transport = peer?.transports.get(transportId);
         if (!transport) return;
-        await transport.connect({ dtlsParameters });
-        callback();
+        try {
+            await transport.connect({ dtlsParameters });
+            callback();
+        } catch (error) {
+            console.error(`!!! Transport connect error:`, error);
+        }
     });
 
     socket.on('produce', async ({ transportId, kind, rtpParameters, appData }, callback) => {
@@ -147,10 +181,11 @@ io.on('connection', (socket) => {
         try {
             const producer = await transport.produce({ kind, rtpParameters, appData });
             peer.producers.set(producer.id, producer);
+            // Inform everyone else in the room about the new producer
             socket.to(currentRoomName).emit('new-producer', { producerId: producer.id, appData, peerId: socket.id });
             callback({ id: producer.id });
         } catch (error) {
-            console.error('! Failed to create producer:', error);
+            console.error('!!! Failed to create producer:', error);
         }
     });
 
@@ -160,47 +195,57 @@ io.on('connection', (socket) => {
             return callback({ error: `Cannot consume` });
         }
         const peer = room.peers.get(socket.id);
-        const transport = Array.from(peer.transports.values()).find(t => ![...peer.producers.values()].some(p => p.transportId === t.id));
+        
+        let recvTransport;
+        for(const transport of peer.transports.values()){
+            // A simple way to find the receiving transport is to check if it's not a sender.
+            // This assumes a simple setup with one send and one receive transport per peer.
+            if(transport.appData.isSender !== true) {
+                recvTransport = transport;
+                break;
+            }
+        }
+         // A more robust way would be to check available transports. For now, we find one that's not the sender.
+        if (!recvTransport) {
+             for(const transport of peer.transports.values()){
+                if(!peer.producers.has(transport.id)) { // A rough check
+                    recvTransport = transport;
+                    break;
+                }
+             }
+        }
 
-        if (!transport) return callback({ error: 'No suitable transport for consumption' });
+        if (!recvTransport) return callback({ error: 'No suitable transport for consumption' });
 
         try {
-            const consumer = await transport.consume({ producerId, rtpCapabilities, paused: true });
+            const consumer = await recvTransport.consume({ producerId, rtpCapabilities, paused: true });
             peer.consumers.set(consumer.id, consumer);
             callback({ id: consumer.id, producerId, kind: consumer.kind, rtpParameters: consumer.rtpParameters });
         } catch (error) {
-            console.error('! Failed to create consumer:', error);
+            console.error('!!! Failed to create consumer:', error);
             callback({ error: error.message });
         }
     });
 
     socket.on('resume', async ({ consumerId }) => {
         const consumer = rooms.get(currentRoomName)?.peers.get(socket.id)?.consumers.get(consumerId);
-        if (consumer) await consumer.resume();
+        if (consumer) {
+            try {
+                await consumer.resume();
+            } catch (error) {
+                console.error(`!!! Consumer resume error:`, error);
+            }
+        }
     });
 
     socket.on('chatMessage', ({ roomName, message }) => {
+        // Broadcast to others in the room
         socket.to(roomName).emit('newChatMessage', { peerId: socket.id, message });
     });
 
     socket.on('disconnect', () => {
-        console.log(`-> client disconnected [id:${socket.id}]`);
-        const room = rooms.get(currentRoomName);
-        if (room) {
-            const peer = room.peers.get(socket.id);
-            if (peer) {
-                for (const producer of peer.producers.values()) {
-                    producer.close();
-                    socket.to(currentRoomName).emit('producer-closed', { producerId: producer.id });
-                }
-            }
-            room.peers.delete(socket.id);
-            if (room.peers.size === 0) {
-                console.log(`-> closing empty room [name:${currentRoomName}]`);
-                room.router.close();
-                rooms.delete(currentRoomName);
-            }
-        }
+        console.log(`-> Client disconnected [id:${socket.id}]`);
+        cleanupPeer();
     });
 });
 
@@ -217,7 +262,7 @@ io.on('connection', (socket) => {
     }
 
     const PORT = process.env.PORT || 3001;
-    httpServer.listen(PORT, () => {
-        console.log(`--- RuGram Call Server listening on port ${PORT} ---`);
+    httpServer.listen(PORT, '127.0.0.1', () => { // Listen only on localhost
+        console.log(`--- RuGram Call Server listening on http://127.0.0.1:${PORT} ---`);
     });
 })();

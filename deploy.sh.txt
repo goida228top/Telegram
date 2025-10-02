@@ -1,141 +1,145 @@
+
 #!/bin/bash
 set -e # Останавливать скрипт при любой ошибке
 
 # --- НАСТРОЙКИ ---
 DOMAIN="rugram.duckdns.org"
-EMAIL="ВАШ_EMAIL@example.com" # ВАЖНО: Укажите ваш настоящий email
-REPO_URL="https://github.com/goida228top/Telegram"
+EMAIL="romanovroma1337@gmail.com" # ВАЖНО: Укажите ваш настоящий email
+GIT_REPO="https://github.com/goida228top/Telegram"
 PROJECT_DIR="/opt/rugram"
-WEB_ROOT="/var/www/rugram"
-SERVER_FILENAME="server.js" # Стандартное, правильное имя файла
 MEDIA_SERVER_PORT="3001"
+# Диапазон портов для медиатрафика Mediasoup (UDP)
+MEDIASOUP_PORT_RANGE="10000:10100"
 
-echo "--- [Шаг 1/5] Установка/обновление программ ---"
+echo "--- [Шаг 1/6] Очистка и настройка файрвола ---"
+# Полная очистка PM2 для избежания конфликтов
+echo "-> Полностью очищаем PM2..."
+pm2 delete all || true
+pm2 save --force
+
+# Настройка файрвола (UFW) - КРИТИЧЕСКИ ВАЖНО для WebRTC
+echo "-> Настраиваем файрвол (UFW)..."
+apt-get install -y ufw
+ufw default deny incoming
+ufw default allow outgoing
+ufw allow ssh       # Важно, чтобы не потерять доступ
+ufw allow http      # 80
+ufw allow https     # 443
+ufw allow ${MEDIASOUP_PORT_RANGE}/udp # Порты для Mediasoup
+ufw --force enable
+echo "-> Правила файрвола обновлены. Открыты порты: SSH, HTTP, HTTPS, ${MEDIASOUP_PORT_RANGE}/udp."
+
+echo "--- [Шаг 2/6] Установка/обновление программ ---"
 apt-get update
-# Устанавливаем утилиты для сборки mediasoup
 apt-get install -y git nginx python3 build-essential curl certbot python3-certbot-nginx
 
-# Устанавливаем Node.js v20 для совместимости
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-apt-get install -y nodejs
-
-# Устанавливаем PM2 глобально
-npm install pm2 -g
-
-echo "--- [Шаг 2/5] Загрузка и сборка проекта ---"
-if [ -d "$PROJECT_DIR" ]; then
-  echo "Обновляем проект..."
-  cd "$PROJECT_DIR"
-  git pull
-else
-  echo "Клонируем репозиторий..."
-  git clone "$REPO_URL" "$PROJECT_DIR"
+# Устанавливаем Node.js v20, если не установлен
+if ! command -v node &> /dev/null || [[ $(node -v) != v20* ]]; then
+    curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+    apt-get install -y nodejs
 fi
-cd "$PROJECT_DIR"
-# Устанавливаем зависимости из вашего package.json
+npm install pm2 -g # Устанавливаем PM2 глобально
+
+echo "--- [Шаг 3/6] Загрузка и сборка проекта ---"
+if [ -d "$PROJECT_DIR" ]; then
+    echo "-> Обновляем проект из GitHub..."
+    cd "$PROJECT_DIR"
+    git reset --hard
+    git pull
+else
+    echo "-> Клонируем проект из GitHub..."
+    git clone "$GIT_REPO" "$PROJECT_DIR"
+    cd "$PROJECT_DIR"
+fi
+
+echo "-> Устанавливаем зависимости..."
 npm install
-# Собираем приложение
+
+echo "-> Собираем фронтенд..."
 npm run build
 
-echo "--- [Шаг 3/5] Подготовка Nginx и получение SSL-сертификата ---"
-mkdir -p "$WEB_ROOT"
-# Временный конфиг для http, чтобы Certbot прошел проверку
+echo "--- [Шаг 4/6] Настройка Nginx и SSL ---"
+# Финальный конфиг Nginx
 cat > /etc/nginx/sites-available/rugram <<EOF
 server {
     listen 80;
     server_name $DOMAIN;
-    root $WEB_ROOT;
-    index index.html;
-    location / {
-        try_files \$uri /index.html;
+
+    # Для проверки Certbot
+    location /.well-known/acme-challenge/ {
+        root /var/www/html;
     }
-}
-EOF
-ln -s -f /etc/nginx/sites-available/rugram /etc/nginx/sites-enabled/
-# Копируем временный index.html для Certbot
-cp "$PROJECT_DIR/index.html" "$WEB_ROOT/"
-systemctl restart nginx
-# Получаем сертификат
-certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m $EMAIL --redirect
 
-echo "--- [Шаг 4/5] Финальная настройка Nginx и копирование файлов сайта ---"
-# Создаем нужные директории и копируем файлы
-mkdir -p "$WEB_ROOT/dist"
-cp "$PROJECT_DIR/dist/bundle.js" "$WEB_ROOT/dist/"
-cp "$PROJECT_DIR/index.html" "$WEB_ROOT/"
-
-# --- ВНЕДРЕНИЕ КЭШ-БАСТИНГА ---
-# Добавляем к <script> уникальный параметр, чтобы браузер не кэшировал старую версию
-TIMESTAMP=$(date +%s)
-sed -i "s|/dist/bundle.js|/dist/bundle.js?v=$TIMESTAMP|g" "$WEB_ROOT/index.html"
-
-# Финальный, надежный конфиг Nginx с HTTPS и прокси для Socket.IO
-cat > /etc/nginx/sites-available/rugram <<EOF
-server {
-    listen 80;
-    server_name $DOMAIN;
     location / {
         return 301 https://\$host\$request_uri;
     }
 }
-server {
-    listen 443 ssl http2;
-    server_name $DOMAIN;
-    ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
+EOF
+ln -s -f /etc/nginx/sites-available/rugram /etc/nginx/sites-enabled/
+mkdir -p /var/www/html
+systemctl restart nginx
 
-    root $WEB_ROOT;
+echo "-> Получаем/обновляем SSL-сертификат..."
+certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m $EMAIL --redirect
+
+# Перезаписываем конфиг после Certbot, чтобы добавить прокси
+cat > /etc/nginx/sites-available/rugram <<EOF
+server {
+    server_name $DOMAIN;
+    root $PROJECT_DIR; # Указываем на корень проекта
     index index.html;
 
     location / {
         try_files \$uri /index.html;
     }
 
-    # Надежная конфигурация прокси для WebSocket (Mediasoup)
+    # Прямой прокси на сервер для Socket.IO
     location /socket.io/ {
         proxy_pass http://127.0.0.1:$MEDIA_SERVER_PORT;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "Upgrade";
         proxy_set_header Host \$host;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_cache_bypass \$http_upgrade;
     }
+
+    listen 443 ssl http2;
+    ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+}
+
+server {
+    if (\$host = $DOMAIN) {
+        return 301 https://\$host\$request_uri;
+    }
+    listen 80;
+    server_name $DOMAIN;
+    return 404;
 }
 EOF
 systemctl restart nginx
+echo "-> Nginx настроен."
 
-echo "--- [Шаг 5/5] Запуск/перезапуск медиа-сервера ---"
+echo "--- [Шаг 5/6] Запуск медиа-сервера ---"
 cd "$PROJECT_DIR"
 
-# --- Определение публичного IP-адреса для Mediasoup ---
-PUBLIC_IP=""
+echo "-> Определяем публичный IP-адрес..."
+PUBLIC_IP=$(curl -s --max-time 5 ifconfig.me || curl -s --max-time 5 icanhazip.com)
 
-# Попытка автоматически определить IP через сервис ifconfig.me
-if command -v curl &> /dev/null; then
-    PUBLIC_IP=$(curl -s --max-time 5 ifconfig.me)
-fi
-
-# Проверяем, что IP-адрес получен и валиден
 if [[ ! "$PUBLIC_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  echo "Не удалось автоматически определить IP-адрес. Укажите его вручную в этом скрипте."
-  # ВАЖНО: Если автоматическое определение не работает, раскомментируйте строку ниже
-  # и вставьте ваш публичный IP-адрес. Например: PUBLIC_IP="81.177.174.44"
-  # PUBLIC_IP="ВАШ_ПУБЛИЧНЫЙ_IP_ЗДЕСЬ"
-  PUBLIC_IP="" # Сбрасываем, если формат неверный
-fi
-
-if [ -z "$PUBLIC_IP" ]; then
-    echo "!!! ВНИМАНИЕ: Публичный IP-адрес не определен. Аудио и видео работать НЕ БУДУТ."
-    pm2 restart rugram-media-server || pm2 start $SERVER_FILENAME --name rugram-media-server
+  echo "!!! ВНИМАНИЕ: Не удалось автоматически определить IP-адрес. Аудио и видео работать НЕ БУДУТ."
+  export MEDIASOUP_ANNOUNCED_IP=""
 else
-    echo "--- Медиа-сервер будет использовать публичный IP: $PUBLIC_IP ---"
-    # Передаем IP как переменную окружения в PM2 и обновляем ее при перезапуске
-    export MEDIASOUP_ANNOUNCED_IP=$PUBLIC_IP
-    pm2 restart rugram-media-server --update-env || pm2 start $SERVER_FILENAME --name rugram-media-server
+  echo "--- Медиа-сервер будет использовать публичный IP: $PUBLIC_IP ---"
+  export MEDIASOUP_ANNOUNCED_IP=$PUBLIC_IP
 fi
 
+# Запускаем server.js из папки проекта
+pm2 start server.js --name "rugram-media-server" --update-env
 pm2 save
+echo "-> Медиа-сервер запущен через PM2."
 
-echo "--- ГОТОВО! ---"
+echo "--- [Шаг 6/6] ГОТОВО! ---"
 echo "Сайт должен быть доступен по адресу: https://$DOMAIN"
+echo "Проверьте статус сервера командой: sudo pm2 status"
