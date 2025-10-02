@@ -73,17 +73,24 @@ const CallView: React.FC<{
     const remoteAudioRef = useRef<HTMLAudioElement>(null);
 
     useEffect(() => {
-        // This is the fix: attach the local stream to a muted audio element.
+        // This is the fix for the echo: attach the local stream to a muted audio element.
         // This tells the browser we are handling the stream, preventing it from
-        // auto-playing it through the speakers (which causes the echo).
+        // auto-playing it through the speakers.
         if (localAudioRef.current && localStream) {
             localAudioRef.current.srcObject = localStream;
+            // Explicitly play muted stream, good practice for some browsers.
+            localAudioRef.current.play().catch(e => console.warn("Local muted audio play failed, this is usually fine", e));
         }
     }, [localStream]);
 
     useEffect(() => {
         if (remoteAudioRef.current && remoteStream) {
             remoteAudioRef.current.srcObject = remoteStream;
+            // This is the fix for the "no sound" bug: explicitly call play()
+            // to overcome strict browser autoplay policies.
+            remoteAudioRef.current.play().catch(error => {
+                console.error("Remote audio playback failed:", error);
+            });
         }
     }, [remoteStream]);
 
