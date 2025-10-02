@@ -107,12 +107,34 @@ systemctl restart nginx
 
 echo "--- [Шаг 5/5] Запуск/перезапуск медиа-сервера ---"
 cd "$PROJECT_DIR"
-# Надежная команда для запуска/перезапуска сервера
-# --- РЕКОМЕНДАЦИЯ ---
-# Если у вас есть проблемы с NAT, вы можете явно указать публичный IP вашего сервера.
-# Для этого раскомментируйте следующую строку и вставьте ваш IP.
-# export MEDIASOUP_ANNOUNCED_IP="ВАШ_ПУБЛИЧНЫЙ_IP_АДРЕС"
-pm2 restart rugram-media-server || pm2 start $SERVER_FILENAME --name rugram-media-server
+
+# --- Определение публичного IP-адреса для Mediasoup ---
+PUBLIC_IP=""
+
+# Попытка автоматически определить IP через сервис ifconfig.me
+if command -v curl &> /dev/null; then
+    PUBLIC_IP=$(curl -s --max-time 5 ifconfig.me)
+fi
+
+# Проверяем, что IP-адрес получен и валиден
+if [[ ! "$PUBLIC_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "Не удалось автоматически определить IP-адрес. Укажите его вручную в этом скрипте."
+  # ВАЖНО: Если автоматическое определение не работает, раскомментируйте строку ниже
+  # и вставьте ваш публичный IP-адрес. Например: PUBLIC_IP="81.177.174.44"
+  # PUBLIC_IP="ВАШ_ПУБЛИЧНЫЙ_IP_ЗДЕСЬ"
+  PUBLIC_IP="" # Сбрасываем, если формат неверный
+fi
+
+if [ -z "$PUBLIC_IP" ]; then
+    echo "!!! ВНИМАНИЕ: Публичный IP-адрес не определен. Аудио и видео работать НЕ БУДУТ."
+    pm2 restart rugram-media-server || pm2 start $SERVER_FILENAME --name rugram-media-server
+else
+    echo "--- Медиа-сервер будет использовать публичный IP: $PUBLIC_IP ---"
+    # Передаем IP как переменную окружения в PM2 и обновляем ее при перезапуске
+    export MEDIASOUP_ANNOUNCED_IP=$PUBLIC_IP
+    pm2 restart rugram-media-server --update-env || pm2 start $SERVER_FILENAME --name rugram-media-server
+fi
+
 pm2 save
 
 echo "--- ГОТОВО! ---"

@@ -555,7 +555,15 @@ const App: React.FC = () => {
     };
 
     const handleSendMessage = (text: string) => {
-        if (socketRef.current) {
+        if (socketRef.current?.id) {
+            // Optimistically add the message to the local state for a snappy UI.
+            const newMessage: ChatMessage = {
+                peerId: socketRef.current.id,
+                text: text,
+                id: `${Date.now()}-local`
+            };
+            setMessages(prev => [...prev, newMessage]);
+
             socketRef.current.emit('chatMessage', { roomName, message: text });
         }
     };
