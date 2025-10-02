@@ -16,6 +16,7 @@ type AnalysisData = {
     source: MediaStreamAudioSourceNode;
     analyser: AnalyserNode;
     animationFrameId: number;
+    clonedTrack: MediaStreamTrack;
 };
 
 type Message = {
@@ -258,12 +259,16 @@ const App: React.FC = () => {
         const audioTrack = stream.getAudioTracks()[0];
         if (!audioTrack || analysisRefs.current.has(id) || !audioContextRef.current) return;
 
+        // FIX: Clone the audio track for analysis to prevent stream conflicts
+        const clonedTrack = audioTrack.clone();
+        const analysisStream = new MediaStream([clonedTrack]);
+        
         const audioContext = audioContextRef.current;
         const analyser = audioContext.createAnalyser();
         analyser.fftSize = 512;
         analyser.smoothingTimeConstant = 0.5;
 
-        const source = audioContext.createMediaStreamSource(stream);
+        const source = audioContext.createMediaStreamSource(analysisStream);
         source.connect(analyser);
 
         const dataArray = new Uint8Array(analyser.frequencyBinCount);
@@ -285,7 +290,7 @@ const App: React.FC = () => {
         };
         animationFrameId = requestAnimationFrame(checkVolume);
 
-        analysisRefs.current.set(id, { context: audioContext, source, analyser, animationFrameId });
+        analysisRefs.current.set(id, { context: audioContext, source, analyser, animationFrameId, clonedTrack });
     };
 
     const stopAudioAnalysis = (id: string) => {
@@ -294,6 +299,8 @@ const App: React.FC = () => {
             cancelAnimationFrame(analysisData.animationFrameId);
             analysisData.source.disconnect();
             analysisData.analyser.disconnect();
+            // FIX: Stop the cloned track to release resources
+            analysisData.clonedTrack.stop();
             analysisRefs.current.delete(id);
         }
         setSpeakingStates(prev => {
