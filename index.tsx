@@ -539,15 +539,28 @@ const App: React.FC = () => {
     
     const startMediaAndProduce = async (type: CallType) => {
         if (!sendTransportRef.current) return;
-        const constraints = { audio: true, video: false }; // Force audio only
+        const constraints = {
+            audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true,
+            },
+            video: false
+        };
 
-        const stream = await navigator.mediaDevices.getUserMedia(constraints);
-        setLocalStream(stream);
-        
-        const audioTrack = stream.getAudioTracks()[0];
-        if (audioTrack) {
-            const audioProducer = await sendTransportRef.current.produce({ track: audioTrack });
-            producersRef.current.set(audioProducer.id, audioProducer);
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia(constraints);
+            setLocalStream(stream);
+            
+            const audioTrack = stream.getAudioTracks()[0];
+            if (audioTrack) {
+                const audioProducer = await sendTransportRef.current.produce({ track: audioTrack });
+                producersRef.current.set(audioProducer.id, audioProducer);
+            }
+        } catch (error) {
+            console.error("Error getting user media:", error);
+            alert("Не удалось получить доступ к микрофону. Проверьте разрешения.");
+            handleEndCall();
         }
     };
 
