@@ -1,5 +1,3 @@
-
-
 // --- Imports ---
 const express = require('express');
 const http = require('http');
@@ -12,7 +10,6 @@ const app = express();
 const httpServer = http.createServer(app);
 
 // --- Serve static files (the frontend) ---
-// This is important for Nginx to correctly find the files
 app.use(express.static(path.join(__dirname)));
 app.use('/dist', express.static(path.join(__dirname, 'dist')));
 
@@ -58,6 +55,8 @@ const mediasoupConfig = {
 // --- Server State ---
 let worker;
 const rooms = new Map(); // roomName -> { router, peers: Map<peerId, Peer> }
+const users = new Map(); // deviceId -> socketId
+const socketToUser = new Map(); // socket.id -> deviceId
 
 // --- Mediasoup Worker Initialization ---
 const createWorker = async () => {
@@ -96,7 +95,53 @@ io.on('connection', (socket) => {
     console.log(`-> Client connected [id:${socket.id}]`);
     let currentRoomName = null;
 
+    socket.on('register', (deviceId) => {
+        console.log(`-> Registering device [deviceId: ${deviceId}] for socket [id: ${socket.id}]`);
+        users.set(deviceId, socket.id);
+        socketToUser.set(socket.id, deviceId);
+    });
+
+    socket.on('sendFriendRequest', ({ recipientId, fromId }) => {
+        const recipientSocketId = users.get(recipientId);
+        if (recipientSocketId) {
+            console.log(`-> Forwarding friend request from [${fromId}] to [${recipientId}]`);
+            io.to(recipientSocketId).emit('friendRequestReceived', { fromId });
+        } else {
+            console.log(`-> Friend request failed: Recipient [${recipientId}] is not online.`);
+            // Optionally, send a failure message back to the sender
+            socket.emit('friendRequestFailed', { recipientId, reason: 'User is not online' });
+        }
+    });
+
+    socket.on('acceptFriendRequest', ({ requesterId, acceptorId }) => {
+        const requesterSocketId = users.get(requesterId);
+        if (requesterSocketId) {
+            console.log(`-> [${acceptorId}] accepted friend request from [${requesterId}]`);
+            io.to(requesterSocketId).emit('friendRequestAccepted', { acceptorId });
+        }
+    });
+
+    socket.on('privateMessage', ({ recipientId, senderId, message }) => {
+        const recipientSocketId = users.get(recipientId);
+        if (recipientSocketId) {
+             console.log(`-> Relaying private message from [${senderId}] to [${recipientId}]`);
+             io.to(recipientSocketId).emit('newPrivateMessage', { senderId, message });
+        }
+    });
+
+
+    // --- Mediasoup specific logic (kept for future call integration) ---
+
     const cleanupPeer = () => {
+        // Disconnect from user mapping
+        const deviceId = socketToUser.get(socket.id);
+        if (deviceId) {
+            users.delete(deviceId);
+            socketToUser.delete(socket.id);
+            console.log(`-> Unregistered device [deviceId: ${deviceId}]`);
+        }
+        
+        // Mediasoup room cleanup
         if (!currentRoomName) return;
         const room = rooms.get(currentRoomName);
         if (room) {
@@ -105,12 +150,10 @@ io.on('connection', (socket) => {
                 console.log(`-> Cleaning up for peer [id:${socket.id}]`);
                 for (const producer of peer.producers.values()) {
                     producer.close();
-                    // Inform other clients that this producer is gone
                     socket.to(currentRoomName).emit('producer-closed', { producerId: producer.id });
                 }
             }
             room.peers.delete(socket.id);
-            // If room is empty, close it
             if (room.peers.size === 0) {
                 console.log(`-> Closing empty room [name:${currentRoomName}]`);
                 room.router.close();
@@ -159,7 +202,7 @@ io.on('connection', (socket) => {
         try {
             const transport = await room.router.createWebRtcTransport({
                 ...mediasoupConfig.webRtcTransport,
-                appData: { isSender } // Tag the transport as sender or receiver
+                appData: { isSender } 
             });
             room.peers.get(socket.id).transports.set(transport.id, transport);
             console.log(`-> [${socket.id}] transport created [id:${transport.id}]`);
@@ -199,7 +242,6 @@ io.on('connection', (socket) => {
             const producer = await transport.produce({ kind, rtpParameters, appData });
             peer.producers.set(producer.id, producer);
             console.log(`-> [${socket.id}] producer created [id:${producer.id}], broadcasting new-producer`);
-            // Inform everyone else in the room about the new producer
             socket.to(currentRoomName).emit('new-producer', { producerId: producer.id, appData, peerId: socket.id });
             callback({ id: producer.id });
         } catch (error) {
@@ -223,10 +265,7 @@ io.on('connection', (socket) => {
             console.error(`!!! [${socket.id}] consume failed: peer not found`);
             return callback({ error: `Peer not found` });
         }
-
-        // Find the transport that is specifically for receiving media
         const recvTransport = Array.from(peer.transports.values()).find(t => t.appData.isSender === false);
-
         if (!recvTransport) {
             console.error(`!!! [${socket.id}] has no suitable transport for consumption`);
             return callback({ error: 'No suitable transport for consumption' });
@@ -259,7 +298,6 @@ io.on('connection', (socket) => {
     });
 
     socket.on('chatMessage', ({ roomName, message }) => {
-        // Broadcast to others in the room
         socket.to(roomName).emit('newChatMessage', { peerId: socket.id, message });
     });
 
@@ -272,15 +310,9 @@ io.on('connection', (socket) => {
 // --- Start Server ---
 (async () => {
     await createWorker();
-
     if (!mediasoupConfig.webRtcTransport.listenIps[0].announcedIp) {
-        console.warn('\n\n\n---');
-        console.warn('!!! ВНИМАНИЕ: Переменная окружения MEDIASOUP_ANNOUNCED_IP не установлена.');
-        console.warn('!!! Это может привести к проблемам с подключением, если сервер находится за NAT.');
-        console.warn('!!! Установите ее в публичный IP-адрес вашего сервера для корректной работы.');
-        console.warn('---\n\n\n');
+        console.warn('\n\n\n---\n!!! ВНИМАНИЕ: Переменная окружения MEDIASOUP_ANNOUNCED_IP не установлена.\n!!! Это может привести к проблемам с подключением, если сервер находится за NAT.\n!!! Установите ее в публичный IP-адрес вашего сервера для корректной работы.\n---\n\n\n');
     }
-
     const PORT = process.env.PORT || 3001;
     httpServer.listen(PORT, '127.0.0.1', () => { // Listen only on localhost
         console.log(`--- RuGram Call Server listening on http://127.0.0.1:${PORT} ---`);
