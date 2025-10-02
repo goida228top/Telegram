@@ -616,9 +616,6 @@ const App: React.FC = () => {
     return (
         <div className="app-container">
             <header className="header">
-                <div className="header-title">
-                    <h1>RuGram Call</h1>
-                </div>
                 <div className="header-menu">
                      <button onClick={() => setIsMenuOpen(!isMenuOpen)} className="btn-menu" aria-label="Меню">
                         <MoreVertIcon />
