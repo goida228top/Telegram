@@ -1,4 +1,5 @@
 
+
 // --- Imports ---
 const express = require('express');
 const http = require('http');
@@ -121,6 +122,7 @@ io.on('connection', (socket) => {
 
     socket.on('joinRoom', async ({ roomName }, callback) => {
         try {
+            console.log(`-> [${socket.id}] joining room [${roomName}]`);
             currentRoomName = roomName;
             const room = await getOrCreateRoom(roomName);
             socket.join(roomName);
@@ -143,6 +145,7 @@ io.on('connection', (socket) => {
     });
 
     socket.on('getRouterRtpCapabilities', async ({ roomName }, callback) => {
+        console.log(`-> [${socket.id}] requesting router RTP capabilities for room [${roomName}]`);
         const room = await getOrCreateRoom(roomName);
         if (room) {
              callback(room.router.rtpCapabilities);
@@ -152,9 +155,14 @@ io.on('connection', (socket) => {
     socket.on('createWebRtcTransport', async ({ isSender }, callback) => {
         const room = rooms.get(currentRoomName);
         if (!room) return;
+        console.log(`-> [${socket.id}] creating WebRTC transport (isSender: ${isSender})`);
         try {
-            const transport = await room.router.createWebRtcTransport(mediasoupConfig.webRtcTransport);
+            const transport = await room.router.createWebRtcTransport({
+                ...mediasoupConfig.webRtcTransport,
+                appData: { isSender } // Tag the transport as sender or receiver
+            });
             room.peers.get(socket.id).transports.set(transport.id, transport);
+            console.log(`-> [${socket.id}] transport created [id:${transport.id}]`);
             callback({ id: transport.id, iceParameters: transport.iceParameters, iceCandidates: transport.iceCandidates, dtlsParameters: transport.dtlsParameters });
         } catch (error) {
             console.error('!!! Failed to create WebRTC transport:', error);
@@ -164,12 +172,17 @@ io.on('connection', (socket) => {
     socket.on('connectTransport', async ({ transportId, dtlsParameters }, callback) => {
         const peer = rooms.get(currentRoomName)?.peers.get(socket.id);
         const transport = peer?.transports.get(transportId);
-        if (!transport) return;
+        if (!transport) {
+            console.error(`!!! [${socket.id}] connectTransport failed: transport not found [id:${transportId}]`);
+            return;
+        }
+        console.log(`-> [${socket.id}] connecting transport [id:${transportId}]`);
         try {
             await transport.connect({ dtlsParameters });
+            console.log(`-> [${socket.id}] transport connected [id:${transportId}]`);
             callback();
         } catch (error) {
-            console.error(`!!! Transport connect error:`, error);
+            console.error(`!!! [${socket.id}] transport connect error on [id:${transportId}]:`, error);
         }
     });
 
@@ -177,10 +190,15 @@ io.on('connection', (socket) => {
         const room = rooms.get(currentRoomName);
         const peer = room?.peers.get(socket.id);
         const transport = peer?.transports.get(transportId);
-        if (!transport) return;
+        if (!transport) {
+             console.error(`!!! [${socket.id}] produce failed: transport not found [id:${transportId}]`);
+            return;
+        }
+        console.log(`-> [${socket.id}] producing on transport [id:${transportId}], kind: ${kind}`);
         try {
             const producer = await transport.produce({ kind, rtpParameters, appData });
             peer.producers.set(producer.id, producer);
+            console.log(`-> [${socket.id}] producer created [id:${producer.id}], broadcasting new-producer`);
             // Inform everyone else in the room about the new producer
             socket.to(currentRoomName).emit('new-producer', { producerId: producer.id, appData, peerId: socket.id });
             callback({ id: producer.id });
@@ -191,50 +209,52 @@ io.on('connection', (socket) => {
 
     socket.on('consume', async ({ producerId, rtpCapabilities }, callback) => {
         const room = rooms.get(currentRoomName);
-        if (!room || !room.router.canConsume({ producerId, rtpCapabilities })) {
+        console.log(`-> [${socket.id}] attempting to consume producer [id:${producerId}]`);
+        if (!room) {
+             console.error(`!!! [${socket.id}] consume failed: room not found [${currentRoomName}]`);
+             return callback({ error: `Room not found` });
+        }
+        if (!room.router.canConsume({ producerId, rtpCapabilities })) {
+            console.error(`!!! [${socket.id}] cannot consume producer [id:${producerId}]`);
             return callback({ error: `Cannot consume` });
         }
         const peer = room.peers.get(socket.id);
-        
-        let recvTransport;
-        for(const transport of peer.transports.values()){
-            // A simple way to find the receiving transport is to check if it's not a sender.
-            // This assumes a simple setup with one send and one receive transport per peer.
-            if(transport.appData.isSender !== true) {
-                recvTransport = transport;
-                break;
-            }
+        if (!peer) {
+            console.error(`!!! [${socket.id}] consume failed: peer not found`);
+            return callback({ error: `Peer not found` });
         }
-         // A more robust way would be to check available transports. For now, we find one that's not the sender.
+
+        // Find the transport that is specifically for receiving media
+        const recvTransport = Array.from(peer.transports.values()).find(t => t.appData.isSender === false);
+
         if (!recvTransport) {
-             for(const transport of peer.transports.values()){
-                if(!peer.producers.has(transport.id)) { // A rough check
-                    recvTransport = transport;
-                    break;
-                }
-             }
+            console.error(`!!! [${socket.id}] has no suitable transport for consumption`);
+            return callback({ error: 'No suitable transport for consumption' });
         }
-
-        if (!recvTransport) return callback({ error: 'No suitable transport for consumption' });
-
+        console.log(`-> [${socket.id}] found recvTransport [id:${recvTransport.id}] for consumption`);
         try {
             const consumer = await recvTransport.consume({ producerId, rtpCapabilities, paused: true });
             peer.consumers.set(consumer.id, consumer);
+            console.log(`-> [${socket.id}] consumer created [id:${consumer.id}] for producer [id:${producerId}]`);
             callback({ id: consumer.id, producerId, kind: consumer.kind, rtpParameters: consumer.rtpParameters });
         } catch (error) {
-            console.error('!!! Failed to create consumer:', error);
+            console.error(`!!! [${socket.id}] failed to create consumer for producer [id:${producerId}]:`, error);
             callback({ error: error.message });
         }
     });
 
     socket.on('resume', async ({ consumerId }) => {
         const consumer = rooms.get(currentRoomName)?.peers.get(socket.id)?.consumers.get(consumerId);
+        console.log(`-> [${socket.id}] resuming consumer [id:${consumerId}]`);
         if (consumer) {
             try {
                 await consumer.resume();
+                console.log(`-> [${socket.id}] consumer resumed [id:${consumerId}]`);
             } catch (error) {
-                console.error(`!!! Consumer resume error:`, error);
+                console.error(`!!! [${socket.id}] consumer resume error on [id:${consumerId}]:`, error);
             }
+        } else {
+             console.log(`-> [${socket.id}] could not find consumer to resume [id:${consumerId}]`);
         }
     });
 

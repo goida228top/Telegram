@@ -331,6 +331,7 @@ const App: React.FC = () => {
                             });
 
                             sendTransport.on('connectionstatechange', (state) => {
+                                console.log(`[local] Send transport state: ${state}`);
                                 if (state === 'failed') {
                                     console.error('Send transport connection failed');
                                     setStatus('Ошибка: Не удалось подключиться к медиа-серверу.');
@@ -347,6 +348,7 @@ const App: React.FC = () => {
                                 });
 
                                 recvTransport.on('connectionstatechange', (state) => {
+                                    console.log(`[local] Receive transport state: ${state}`);
                                     if (state === 'failed') {
                                         console.error('Receive transport connection failed');
                                         setStatus('Ошибка: Не удалось получить медиа-данные.');
@@ -371,6 +373,7 @@ const App: React.FC = () => {
             });
 
             socket.on('new-producer', ({ producerId, appData, peerId }) => {
+                console.log(`[remote] New producer detected from peer ${peerId}, producer ${producerId}, type ${appData.mediaType}`);
                 if (peerId === socket.id) return;
                 consume(producerId, appData.mediaType, peerId);
             });
@@ -456,14 +459,19 @@ const App: React.FC = () => {
             console.error("Send transport is not ready.");
             return;
         }
+        console.log('[local] Attempting to produce stream...');
         const videoTrack = stream.getVideoTracks()[0];
         const audioTrack = stream.getAudioTracks()[0];
         
         if (isCameraOn && videoTrack) {
+            console.log('[local] Producing video track...');
             videoProducerRef.current = await sendTransportRef.current.produce({ track: videoTrack, appData: { mediaType: 'video' } });
+            console.log('[local] Video producer created:', videoProducerRef.current.id);
         }
         if (audioTrack) {
+            console.log('[local] Producing audio track...');
             audioProducerRef.current = await sendTransportRef.current.produce({ track: audioTrack, appData: { mediaType: 'audio' } });
+            console.log('[local] Audio producer created:', audioProducerRef.current.id);
         }
     };
 
@@ -471,14 +479,16 @@ const App: React.FC = () => {
         if (!deviceRef.current || !socketRef.current || !recvTransportRef.current) {
             return;
         }
+        console.log(`[local] Attempting to consume producer ${producerId} from peer ${peerId}`);
         const { rtpCapabilities } = deviceRef.current;
         socketRef.current.emit('consume', { producerId, rtpCapabilities }, async (params: any) => {
             if (params.error) {
-                console.error('Ошибка создания консьюмера:', params.error);
+                console.error(`[local] Failed to create consumer for producer ${producerId}:`, params.error);
                 return;
             }
 
             const consumer = await recvTransportRef.current!.consume(params);
+            console.log(`[local] Consumer created for producer ${producerId}:`, consumer.id, 'track:', consumer.track.id, 'kind:', consumer.track.kind);
             socketRef.current!.emit('resume', { consumerId: consumer.id });
 
             setConsumers(prev => new Map(prev).set(producerId, consumer));
