@@ -32,11 +32,14 @@
       width: 100%;
       max-width: 800px; /* Max width for a messenger-like view */
     }
-    .app-container {
+    .app-container, .main-ui {
       display: flex;
       flex-direction: column;
       height: 100vh;
       width: 100%;
+    }
+    .main-ui {
+      position: relative;
     }
 
     /* --- Header --- */
@@ -190,20 +193,23 @@
       flex-shrink: 0;
     }
     .btn-back {
-      background: none;
-      border: none;
-      color: var(--text-color);
-      padding: 0.5rem;
-      border-radius: 50%;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
+      background: none; border: none; color: var(--text-color);
+      padding: 0.5rem; border-radius: 50%; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
     }
     .chat-contact-id {
       font-weight: bold;
       margin-left: 0.5rem;
+      flex-grow: 1;
     }
+    .chat-header-actions { display: flex; gap: 0.5rem; }
+    .btn-action {
+      background: none; border: none; color: var(--text-color);
+      padding: 0.5rem; border-radius: 50%; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      width: 40px; height: 40px;
+    }
+    .btn-action:hover { background-color: rgba(255, 255, 255, 0.1); }
     .messages-area {
       flex-grow: 1;
       overflow-y: auto;
@@ -237,11 +243,80 @@
       background-color: var(--surface-color);
       flex-shrink: 0;
     }
-    .message-form input {
-        margin-right: 0.5rem;
+    .message-form input { margin-right: 0.5rem; }
+    .message-form button { min-width: 100px; }
+
+    /* --- Call UI --- */
+    .call-modal-overlay {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background-color: rgba(0, 0, 0, 0.7);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
     }
-    .message-form button {
-        min-width: 100px;
+    .call-modal {
+      background-color: var(--surface-color);
+      padding: 2rem;
+      border-radius: var(--border-radius);
+      text-align: center;
+      box-shadow: 0 5px 20px rgba(0,0,0,0.5);
+    }
+    .call-modal h3 { margin-top: 0; }
+    .call-modal p span { font-family: monospace; }
+    .call-modal-actions {
+      margin-top: 1.5rem;
+      display: flex;
+      gap: 1rem;
+      justify-content: center;
+    }
+    .btn-decline {
+        background-color: var(--error-color);
+        color: var(--text-color);
+    }
+
+    .call-view {
+        position: fixed;
+        top: 0; left: 0; width: 100%; height: 100%;
+        background-color: #000;
+        z-index: 50;
+    }
+    .remote-video {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+    }
+    .local-video {
+        position: absolute;
+        bottom: 20px;
+        right: 20px;
+        width: 25%;
+        max-width: 200px;
+        border-radius: 8px;
+        border: 2px solid rgba(255,255,255,0.3);
+    }
+    .call-controls {
+        position: absolute;
+        bottom: 30px;
+        left: 50%;
+        transform: translateX(-50%);
+        display: flex;
+        gap: 1rem;
+    }
+    .btn-hang-up {
+        background-color: var(--error-color);
+        color: var(--text-color);
+        border-radius: 50%;
+        width: 60px;
+        height: 60px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+    }
+    .btn-hang-up svg {
+        width: 30px; height: 30px;
     }
 
   </style>

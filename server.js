@@ -95,6 +95,8 @@ io.on('connection', (socket) => {
     console.log(`-> Client connected [id:${socket.id}]`);
     let currentRoomName = null;
 
+    const getSocket = (userId) => io.sockets.sockets.get(users.get(userId));
+
     socket.on('register', (deviceId) => {
         console.log(`-> Registering device [deviceId: ${deviceId}] for socket [id: ${socket.id}]`);
         users.set(deviceId, socket.id);
@@ -102,38 +104,69 @@ io.on('connection', (socket) => {
     });
 
     socket.on('sendFriendRequest', ({ recipientId, fromId }) => {
-        const recipientSocketId = users.get(recipientId);
-        if (recipientSocketId) {
+        const recipientSocket = getSocket(recipientId);
+        if (recipientSocket) {
             console.log(`-> Forwarding friend request from [${fromId}] to [${recipientId}]`);
-            io.to(recipientSocketId).emit('friendRequestReceived', { fromId });
+            recipientSocket.emit('friendRequestReceived', { fromId });
         } else {
             console.log(`-> Friend request failed: Recipient [${recipientId}] is not online.`);
-            // Optionally, send a failure message back to the sender
             socket.emit('friendRequestFailed', { recipientId, reason: 'User is not online' });
         }
     });
 
     socket.on('acceptFriendRequest', ({ requesterId, acceptorId }) => {
-        const requesterSocketId = users.get(requesterId);
-        if (requesterSocketId) {
+        const requesterSocket = getSocket(requesterId);
+        if (requesterSocket) {
             console.log(`-> [${acceptorId}] accepted friend request from [${requesterId}]`);
-            io.to(requesterSocketId).emit('friendRequestAccepted', { acceptorId });
+            requesterSocket.emit('friendRequestAccepted', { acceptorId });
         }
     });
 
     socket.on('privateMessage', ({ recipientId, senderId, message }) => {
-        const recipientSocketId = users.get(recipientId);
-        if (recipientSocketId) {
+        const recipientSocket = getSocket(recipientId);
+        if (recipientSocket) {
              console.log(`-> Relaying private message from [${senderId}] to [${recipientId}]`);
-             io.to(recipientSocketId).emit('newPrivateMessage', { senderId, message });
+             recipientSocket.emit('newPrivateMessage', { senderId, message });
+        }
+    });
+
+    // --- Call Signaling ---
+    socket.on('call-offer', ({ toId, fromId, type }) => {
+        const recipientSocket = getSocket(toId);
+        if (recipientSocket) {
+            console.log(`-> Relaying call offer from [${fromId}] to [${toId}]`);
+            recipientSocket.emit('call-offer', { fromId, type });
+        }
+    });
+    
+    socket.on('call-accept', ({ toId, fromId }) => {
+        const recipientSocket = getSocket(toId);
+        if (recipientSocket) {
+            console.log(`-> Relaying call accept from [${fromId}] to [${toId}]`);
+            recipientSocket.emit('call-accepted', { fromId });
+        }
+    });
+
+    socket.on('call-decline', ({ toId, fromId }) => {
+        const recipientSocket = getSocket(toId);
+        if (recipientSocket) {
+            console.log(`-> Relaying call decline from [${fromId}] to [${toId}]`);
+            recipientSocket.emit('call-declined', { fromId });
+        }
+    });
+    
+    socket.on('call-end', ({ toId, fromId }) => {
+        const recipientSocket = getSocket(toId);
+        if (recipientSocket) {
+            console.log(`-> Relaying call end from [${fromId}] to [${toId}]`);
+            recipientSocket.emit('call-ended', { fromId });
         }
     });
 
 
-    // --- Mediasoup specific logic (kept for future call integration) ---
+    // --- Mediasoup specific logic ---
 
     const cleanupPeer = () => {
-        // Disconnect from user mapping
         const deviceId = socketToUser.get(socket.id);
         if (deviceId) {
             users.delete(deviceId);
@@ -141,17 +174,18 @@ io.on('connection', (socket) => {
             console.log(`-> Unregistered device [deviceId: ${deviceId}]`);
         }
         
-        // Mediasoup room cleanup
         if (!currentRoomName) return;
         const room = rooms.get(currentRoomName);
         if (room) {
             const peer = room.peers.get(socket.id);
             if (peer) {
-                console.log(`-> Cleaning up for peer [id:${socket.id}]`);
-                for (const producer of peer.producers.values()) {
-                    producer.close();
-                    socket.to(currentRoomName).emit('producer-closed', { producerId: producer.id });
-                }
+                console.log(`-> Cleaning up for peer [id:${socket.id}] in room [${currentRoomName}]`);
+                peer.transports.forEach(t => t.close());
+                
+                // Notify other peers in the room that producers are closed
+                peer.producers.forEach(p => {
+                    socket.to(currentRoomName).emit('producer-closed', { producerId: p.id });
+                });
             }
             room.peers.delete(socket.id);
             if (room.peers.size === 0) {
@@ -161,7 +195,6 @@ io.on('connection', (socket) => {
             }
         }
     };
-
 
     socket.on('joinRoom', async ({ roomName }, callback) => {
         try {
@@ -181,7 +214,7 @@ io.on('connection', (socket) => {
                     }
                 }
             }
-            callback(existingProducers);
+            // callback(existingProducers); // We handle this with new-producer now
         } catch (error) {
             console.error(`!!! Error joining room [name:${roomName}]`, error);
         }
@@ -215,10 +248,8 @@ io.on('connection', (socket) => {
     socket.on('connectTransport', async ({ transportId, dtlsParameters }, callback) => {
         const peer = rooms.get(currentRoomName)?.peers.get(socket.id);
         const transport = peer?.transports.get(transportId);
-        if (!transport) {
-            console.error(`!!! [${socket.id}] connectTransport failed: transport not found [id:${transportId}]`);
-            return;
-        }
+        if (!transport) return console.error(`!!! [${socket.id}] connectTransport failed: transport not found [id:${transportId}]`);
+        
         console.log(`-> [${socket.id}] connecting transport [id:${transportId}]`);
         try {
             await transport.connect({ dtlsParameters });
@@ -233,16 +264,14 @@ io.on('connection', (socket) => {
         const room = rooms.get(currentRoomName);
         const peer = room?.peers.get(socket.id);
         const transport = peer?.transports.get(transportId);
-        if (!transport) {
-             console.error(`!!! [${socket.id}] produce failed: transport not found [id:${transportId}]`);
-            return;
-        }
+        if (!transport) return console.error(`!!! [${socket.id}] produce failed: transport not found [id:${transportId}]`);
+        
         console.log(`-> [${socket.id}] producing on transport [id:${transportId}], kind: ${kind}`);
         try {
             const producer = await transport.produce({ kind, rtpParameters, appData });
             peer.producers.set(producer.id, producer);
             console.log(`-> [${socket.id}] producer created [id:${producer.id}], broadcasting new-producer`);
-            socket.to(currentRoomName).emit('new-producer', { producerId: producer.id, appData, peerId: socket.id });
+            socket.to(currentRoomName).emit('new-producer', { producerId: producer.id, peerId: socket.id });
             callback({ id: producer.id });
         } catch (error) {
             console.error('!!! Failed to create producer:', error);
@@ -252,24 +281,15 @@ io.on('connection', (socket) => {
     socket.on('consume', async ({ producerId, rtpCapabilities }, callback) => {
         const room = rooms.get(currentRoomName);
         console.log(`-> [${socket.id}] attempting to consume producer [id:${producerId}]`);
-        if (!room) {
-             console.error(`!!! [${socket.id}] consume failed: room not found [${currentRoomName}]`);
-             return callback({ error: `Room not found` });
-        }
-        if (!room.router.canConsume({ producerId, rtpCapabilities })) {
-            console.error(`!!! [${socket.id}] cannot consume producer [id:${producerId}]`);
-            return callback({ error: `Cannot consume` });
-        }
+        if (!room) return callback({ error: `Room not found` });
+        if (!room.router.canConsume({ producerId, rtpCapabilities })) return callback({ error: `Cannot consume` });
+        
         const peer = room.peers.get(socket.id);
-        if (!peer) {
-            console.error(`!!! [${socket.id}] consume failed: peer not found`);
-            return callback({ error: `Peer not found` });
-        }
-        const recvTransport = Array.from(peer.transports.values()).find(t => t.appData.isSender === false);
-        if (!recvTransport) {
-            console.error(`!!! [${socket.id}] has no suitable transport for consumption`);
-            return callback({ error: 'No suitable transport for consumption' });
-        }
+        if (!peer) return callback({ error: `Peer not found` });
+        
+        const recvTransport = Array.from(peer.transports.values()).find(t => !t.appData.isSender);
+        if (!recvTransport) return callback({ error: 'No suitable transport for consumption' });
+
         console.log(`-> [${socket.id}] found recvTransport [id:${recvTransport.id}] for consumption`);
         try {
             const consumer = await recvTransport.consume({ producerId, rtpCapabilities, paused: true });
@@ -284,21 +304,15 @@ io.on('connection', (socket) => {
 
     socket.on('resume', async ({ consumerId }) => {
         const consumer = rooms.get(currentRoomName)?.peers.get(socket.id)?.consumers.get(consumerId);
+        if (!consumer) return console.log(`-> [${socket.id}] could not find consumer to resume [id:${consumerId}]`);
+        
         console.log(`-> [${socket.id}] resuming consumer [id:${consumerId}]`);
-        if (consumer) {
-            try {
-                await consumer.resume();
-                console.log(`-> [${socket.id}] consumer resumed [id:${consumerId}]`);
-            } catch (error) {
-                console.error(`!!! [${socket.id}] consumer resume error on [id:${consumerId}]:`, error);
-            }
-        } else {
-             console.log(`-> [${socket.id}] could not find consumer to resume [id:${consumerId}]`);
+        try {
+            await consumer.resume();
+            console.log(`-> [${socket.id}] consumer resumed [id:${consumerId}]`);
+        } catch (error) {
+            console.error(`!!! [${socket.id}] consumer resume error on [id:${consumerId}]:`, error);
         }
-    });
-
-    socket.on('chatMessage', ({ roomName, message }) => {
-        socket.to(roomName).emit('newChatMessage', { peerId: socket.id, message });
     });
 
     socket.on('disconnect', () => {
