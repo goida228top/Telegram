@@ -1,3 +1,4 @@
+
 import React, { useState, useRef, useEffect } from 'react';
 import { createRoot } from 'react-dom/client';
 import { io, Socket } from 'socket.io-client';
@@ -72,6 +73,9 @@ const CallView: React.FC<{
     const remoteAudioRef = useRef<HTMLAudioElement>(null);
 
     useEffect(() => {
+        // This is the fix: attach the local stream to a muted audio element.
+        // This tells the browser we are handling the stream, preventing it from
+        // auto-playing it through the speakers (which causes the echo).
         if (localAudioRef.current && localStream) {
             localAudioRef.current.srcObject = localStream;
         }
@@ -93,8 +97,10 @@ const CallView: React.FC<{
                 <div className="avatar-placeholder">👤</div>
                 <span className="participant-name">{peerId.substring(0, 8)}...</span>
             </div>
-
-            <audio ref={localAudioRef} autoPlay muted playsInline />
+            
+            {/* Hidden, muted audio element for local stream to prevent echo */}
+            <audio ref={localAudioRef} autoPlay playsInline muted />
+            {/* Visible (but hidden by CSS) audio element for remote stream */}
             <audio ref={remoteAudioRef} autoPlay playsInline />
 
             <div className="call-controls">
@@ -242,18 +248,17 @@ const App: React.FC = () => {
     const [view, setView] = useState<View>('contacts');
     const [myId] = useState<string>(Storage.getDeviceId());
     const [isMenuOpen, setIsMenuOpen] = useState(false);
-    const [copySuccess, setCopySuccess] = useState('');
-    
+    const [activeChatId, setActiveChatId] = useState<string | null>(null);
+
     // Data State
     const [contacts, setContacts] = useState<Contact[]>(Storage.getContacts());
     const [friendRequests, setFriendRequests] = useState<FriendRequest[]>(Storage.getFriendRequests());
     const [messages, setMessages] = useState<Record<string, PrivateMessage[]>>(Storage.getMessages());
-    const [activeChatId, setActiveChatId] = useState<string | null>(null);
 
     // Call State
     const [callState, setCallState] = useState<CallState>('idle');
-    const [callType, setCallType] = useState<CallType | null>(null);
-    const [incomingCallFrom, setIncomingCallFrom] = useState<string | null>(null);
+    const [activeCallPeerId, setActiveCallPeerId] = useState<string | null>(null);
+    const [incomingCallFromId, setIncomingCallFromId] = useState<string | null>(null);
     const [localStream, setLocalStream] = useState<MediaStream | null>(null);
     const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
 
@@ -262,161 +267,221 @@ const App: React.FC = () => {
     const deviceRef = useRef<mediasoupTypes.Device | null>(null);
     const sendTransportRef = useRef<mediasoupTypes.Transport | null>(null);
     const recvTransportRef = useRef<mediasoupTypes.Transport | null>(null);
-    const producersRef = useRef<Map<string, mediasoupTypes.Producer>>(new Map());
+    const producerRef = useRef<mediasoupTypes.Producer | null>(null);
     const consumersRef = useRef<Map<string, mediasoupTypes.Consumer>>(new Map());
-    
-    // Ref to hold the current active chat ID to prevent stale closures in socket handlers
-    const activeChatIdRef = useRef(activeChatId);
-    useEffect(() => {
-      activeChatIdRef.current = activeChatId;
-    }, [activeChatId]);
 
-
-    const getPrivateRoomName = (peerId: string) => [myId, peerId].sort().join('--');
-
-    // --- Data Persistence Effects ---
-    useEffect(() => { Storage.saveContacts(contacts); }, [contacts]);
-    useEffect(() => { Storage.saveFriendRequests(friendRequests); }, [friendRequests]);
-    useEffect(() => { Storage.saveMessages(messages); }, [messages]);
-
-    // --- Main Socket.IO Effect ---
+    // --- Main Connection Effect ---
     useEffect(() => {
         const socket = io({ path: '/socket.io/' });
         socketRef.current = socket;
-
-        const handleNewProducer = async ({ producerId, peerId }) => {
-            if (!recvTransportRef.current) {
-                console.error("Receive transport is not ready");
-                return;
-            }
-            console.log(`New producer found [id: ${producerId}], consuming...`);
-            socket.emit('consume', { producerId, rtpCapabilities: deviceRef.current.rtpCapabilities },
-                async (consumerData) => {
-                    if (consumerData.error) {
-                        console.error('Failed to consume:', consumerData.error);
-                        return;
-                    }
-                    const consumer = await recvTransportRef.current.consume(consumerData);
-                    consumersRef.current.set(consumer.id, consumer);
-                    const { track } = consumer;
-                    setRemoteStream(prev => {
-                        const newStream = prev ? new MediaStream(prev.getTracks()) : new MediaStream();
-                        if (!newStream.getTrackById(track.id)) {
-                             newStream.addTrack(track);
-                        }
-                        return newStream;
-                    });
-                    socket.emit('resume', { consumerId: consumer.id });
-                }
-            );
-        };
 
         socket.on('connect', () => {
             console.log('Connected, registering with ID:', myId);
             socket.emit('register', myId);
         });
+        
+        socket.on('disconnect', () => console.log('Disconnected from server'));
 
+        // --- Event Listeners ---
         socket.on('friendRequestReceived', ({ fromId }: { fromId: string }) => {
-            setContacts(prevContacts => {
-                if (prevContacts.some(c => c.id === fromId)) return prevContacts;
-                setFriendRequests(prevReqs => {
-                    if (prevReqs.some(r => r.fromId === fromId)) return prevReqs;
-                    return [...prevReqs, { fromId }];
-                });
-                return prevContacts;
+            setFriendRequests(prev => {
+                if (prev.some(req => req.fromId === fromId)) return prev;
+                const newRequests = [...prev, { fromId }];
+                Storage.saveFriendRequests(newRequests);
+                return newRequests;
             });
         });
 
         socket.on('friendRequestAccepted', ({ acceptorId }: { acceptorId: string }) => {
-             setContacts(prev => prev.some(c => c.id === acceptorId) ? prev : [...prev, { id: acceptorId }]);
+            setContacts(prev => {
+                if (prev.some(c => c.id === acceptorId)) return prev;
+                const newContacts = [...prev, { id: acceptorId }];
+                Storage.saveContacts(newContacts);
+                return newContacts;
+            });
         });
         
-        socket.on('newPrivateMessage', ({ senderId, message }: { senderId: string, message: string }) => {
-            addMessage(senderId, senderId, message);
+        socket.on('newPrivateMessage', ({ senderId, message }: { senderId: string, message: PrivateMessage }) => {
+            setMessages(prev => {
+                const newMessages = { ...prev };
+                if (!newMessages[senderId]) newMessages[senderId] = [];
+                newMessages[senderId] = [...newMessages[senderId], message];
+                Storage.saveMessages(newMessages);
+                return newMessages;
+            });
         });
 
-        // --- Call Signaling Handlers ---
+        // --- Call Signaling Listeners ---
         socket.on('call-offer', ({ fromId, type }: { fromId: string, type: CallType }) => {
-            setCallState(currentCallState => {
-                if (currentCallState === 'idle') {
-                    setIncomingCallFrom(fromId);
-                    setCallType(type);
-                    return 'incoming';
-                } else {
-                    socket.emit('call-decline', { toId: fromId, fromId: myId });
-                    return currentCallState;
-                }
-            });
-        });
-
-        socket.on('call-accepted', async ({ fromId }: { fromId: string }) => {
-            setCallState(currentCallState => {
-                if (currentCallState === 'outgoing' && activeChatIdRef.current === fromId) {
-                    setCallType(currentCallType => {
-                        initAndStartCall(fromId, currentCallType);
-                        return currentCallType;
-                    });
-                    return 'active';
-                }
-                return currentCallState;
-            });
-        });
-
-        socket.on('call-declined', ({ fromId }: { fromId: string }) => {
-             if (activeChatIdRef.current === fromId) {
-                alert('Вызов отклонен');
-                handleEndCall(false); // don't emit
+            // Only accept calls if idle
+            if (callState === 'idle') {
+                setIncomingCallFromId(fromId);
+                setCallState('incoming');
             }
         });
 
-        socket.on('call-ended', () => {
-             handleEndCall(false); // don't emit
-        });
-        
-        socket.on('new-producer', handleNewProducer);
-        socket.on('producer-closed', ({ producerId }) => {
-             console.log(`Producer [id: ${producerId}] closed.`);
-             // Handle remote stream cleanup if necessary
+        socket.on('call-accepted', ({ fromId }: { fromId: string }) => {
+            if (callState === 'outgoing' && activeCallPeerId === fromId) {
+                setCallState('active');
+                startMediaAndProduce();
+            }
         });
 
-        socket.on('disconnect', () => console.log('Disconnected from server'));
+        socket.on('call-declined', ({ fromId }: { fromId: string }) => {
+            if (callState === 'outgoing' && activeCallPeerId === fromId) {
+                alert('Вызов отклонен');
+                handleEndCall();
+            }
+        });
+
+        socket.on('call-ended', ({ fromId }: { fromId: string }) => {
+            if (callState === 'active' && activeCallPeerId === fromId) {
+                 alert('Собеседник завершил вызов');
+                 handleEndCall();
+            }
+        });
+
+        // Mediasoup Listeners
+        socket.on('new-producer', async ({ producerId, peerId }) => {
+            if (recvTransportRef.current) {
+                await consumeStream(producerId);
+            }
+        });
 
         return () => {
-            console.log("Disconnecting socket on cleanup.");
             socket.disconnect();
         };
-    }, [myId]); // Stable dependency array to prevent re-connections
+    }, [myId, callState, activeCallPeerId]);
 
 
-    const addMessage = (peerId: string, senderId: string, text: string) => {
-        const newMessage: PrivateMessage = { id: `${Date.now()}`, text, senderId, timestamp: Date.now() };
-        setMessages(prev => {
-            const peerMessages = prev[peerId] || [];
-            return { ...prev, [peerId]: [...peerMessages, newMessage] };
+    // --- Mediasoup Core Functions ---
+    const joinCallRoom = async (peerId: string) => {
+        const roomName = [myId, peerId].sort().join('-'); // Create a deterministic room name
+        socketRef.current?.emit('joinRoom', { roomName });
+
+        const device = new mediasoupClient.Device();
+        deviceRef.current = device;
+        
+        const routerRtpCapabilities = await new Promise<mediasoupTypes.RtpCapabilities>(resolve => {
+            socketRef.current?.emit('getRouterRtpCapabilities', { roomName }, resolve);
+        });
+        
+        await device.load({ routerRtpCapabilities });
+        
+        // Create send transport
+        const sendTransportParams = await new Promise<any>(resolve => {
+            socketRef.current?.emit('createWebRtcTransport', { isSender: true }, resolve);
+        });
+        const sendTransport = device.createSendTransport(sendTransportParams);
+        sendTransportRef.current = sendTransport;
+        
+        sendTransport.on('connect', ({ dtlsParameters }, callback, errback) => {
+            socketRef.current?.emit('connectTransport', { transportId: sendTransport.id, dtlsParameters }, () => callback());
+        });
+        sendTransport.on('produce', (parameters, callback, errback) => {
+             socketRef.current?.emit('produce', {
+                transportId: sendTransport.id,
+                kind: parameters.kind,
+                rtpParameters: parameters.rtpParameters,
+                appData: parameters.appData,
+            }, ({ id }) => callback({ id }));
+        });
+
+        // Create receive transport
+        const recvTransportParams = await new Promise<any>(resolve => {
+            socketRef.current?.emit('createWebRtcTransport', { isSender: false }, resolve);
+        });
+        const recvTransport = device.createRecvTransport(recvTransportParams);
+        recvTransportRef.current = recvTransport;
+        
+        recvTransport.on('connect', ({ dtlsParameters }, callback, errback) => {
+            socketRef.current?.emit('connectTransport', { transportId: recvTransport.id, dtlsParameters }, () => callback());
         });
     };
+
+    const startMediaAndProduce = async () => {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ 
+                audio: {
+                    echoCancellation: true,
+                    noiseSuppression: true,
+                    autoGainControl: true,
+                }, 
+                video: false 
+            });
+            setLocalStream(stream);
+            
+            const track = stream.getAudioTracks()[0];
+            const producer = await sendTransportRef.current?.produce({ track });
+            producerRef.current = producer;
+
+        } catch (error) {
+            console.error("Error getting user media:", error);
+            alert('Не удалось получить доступ к микрофону.');
+            handleEndCall();
+        }
+    };
     
-    // --- Contact Management Handlers ---
+    const consumeStream = async (producerId: string) => {
+        if (!deviceRef.current) return;
+        
+        const { rtpCapabilities } = deviceRef.current;
+        const data = await new Promise<any>(resolve => {
+            socketRef.current?.emit('consume', { producerId, rtpCapabilities }, resolve);
+        });
+
+        if (data.error) return console.error('Consume error:', data.error);
+        
+        const consumer = await recvTransportRef.current?.consume(data);
+        if (!consumer) return;
+
+        consumersRef.current.set(consumer.id, consumer);
+        
+        const stream = new MediaStream();
+        stream.addTrack(consumer.track);
+        setRemoteStream(stream);
+
+        socketRef.current?.emit('resume', { consumerId: consumer.id });
+    };
+
+
+    // --- UI Handlers ---
     const handleAddContact = (id: string) => {
-        if (contacts.some(c => c.id === id)) return alert("Этот пользователь уже в ваших контактах.");
         socketRef.current?.emit('sendFriendRequest', { recipientId: id, fromId: myId });
-        alert(`Заявка отправлена пользователю ${id.substring(0,8)}...`);
+        alert(`Заявка отправлена пользователю ${id.substring(0, 8)}...`);
     };
 
     const handleAcceptRequest = (requesterId: string) => {
-        if (!contacts.some(c => c.id === requesterId)) {
-            setContacts(prev => [...prev, { id: requesterId }]);
-        }
-        setFriendRequests(prev => prev.filter(req => req.fromId !== requesterId));
         socketRef.current?.emit('acceptFriendRequest', { requesterId, acceptorId: myId });
+        setContacts(prev => {
+            const newContacts = [...prev, { id: requesterId }];
+            Storage.saveContacts(newContacts);
+            return newContacts;
+        });
+        setFriendRequests(prev => {
+            const newRequests = prev.filter(req => req.fromId !== requesterId);
+            Storage.saveFriendRequests(newRequests);
+            return newRequests;
+        });
     };
     
-    // --- Chat Handlers ---
     const handleSendMessage = (recipientId: string, text: string) => {
-        socketRef.current?.emit('privateMessage', { recipientId, senderId: myId, message: text });
-        addMessage(recipientId, myId, text);
+        const message: PrivateMessage = {
+            id: crypto.randomUUID(),
+            text,
+            senderId: myId,
+            timestamp: Date.now()
+        };
+        setMessages(prev => {
+            const newMessages = { ...prev };
+            if (!newMessages[recipientId]) newMessages[recipientId] = [];
+            newMessages[recipientId] = [...newMessages[recipientId], message];
+            Storage.saveMessages(newMessages);
+            return newMessages;
+        });
+        socketRef.current?.emit('privateMessage', { recipientId, senderId: myId, message });
     };
-
+    
     const handleSelectChat = (id: string) => {
         setActiveChatId(id);
         setView('chat');
@@ -427,205 +492,143 @@ const App: React.FC = () => {
         setView('contacts');
     };
 
-    // --- Call Management Handlers ---
-    const handleStartCall = (peerId: string, type: 'audio') => {
-        if (callState !== 'idle') return alert("Завершите текущий вызов.");
+    // --- Call Handlers ---
+    const handleStartCall = (peerId: string) => {
+        setActiveCallPeerId(peerId);
         setCallState('outgoing');
-        setCallType(type);
-        setActiveChatId(peerId);
-        socketRef.current?.emit('call-offer', { toId: peerId, fromId: myId, type });
+        socketRef.current?.emit('call-offer', { toId: peerId, fromId: myId, type: 'audio' });
+        joinCallRoom(peerId);
     };
-    
-    const handleAcceptCall = async () => {
-        if (!incomingCallFrom) return;
+
+    const handleAcceptCall = () => {
+        if (!incomingCallFromId) return;
+        setActiveCallPeerId(incomingCallFromId);
         setCallState('active');
-        setActiveChatId(incomingCallFrom);
-        setView('chat'); // Switch to chat view behind the call
-        socketRef.current?.emit('call-accept', { toId: incomingCallFrom, fromId: myId });
-        await initAndStartCall(incomingCallFrom, callType);
+        socketRef.current?.emit('call-accept', { toId: incomingCallFromId, fromId: myId });
+        setIncomingCallFromId(null);
+        joinCallRoom(incomingCallFromId);
+        startMediaAndProduce();
     };
 
     const handleDeclineCall = () => {
-        if (!incomingCallFrom) return;
-        socketRef.current?.emit('call-decline', { toId: incomingCallFrom, fromId: myId });
+        if (incomingCallFromId) {
+            socketRef.current?.emit('call-decline', { toId: incomingCallFromId, fromId: myId });
+        }
+        setIncomingCallFromId(null);
         setCallState('idle');
-        setIncomingCallFrom(null);
-        setCallType(null);
     };
 
-    const handleEndCall = (emitEvent = true) => {
-        if (emitEvent && activeChatIdRef.current) {
-            socketRef.current?.emit('call-end', { toId: activeChatIdRef.current, fromId: myId });
+    const handleEndCall = () => {
+        if (activeCallPeerId) {
+            socketRef.current?.emit('call-end', { toId: activeCallPeerId, fromId: myId });
         }
         
         localStream?.getTracks().forEach(track => track.stop());
-        setLocalStream(null);
-        setRemoteStream(null);
-
-        producersRef.current.forEach(p => p.close());
-        producersRef.current.clear();
-        consumersRef.current.forEach(c => c.close());
-        consumersRef.current.clear();
+        producerRef.current?.close();
         sendTransportRef.current?.close();
         recvTransportRef.current?.close();
         
+        setLocalStream(null);
+        setRemoteStream(null);
+        setActiveCallPeerId(null);
         setCallState('idle');
-        setIncomingCallFrom(null);
-        setCallType(null);
-        // Do not reset activeChatId, to stay in the chat view
+        setIncomingCallFromId(null);
+
+        producerRef.current = null;
+        sendTransportRef.current = null;
+        recvTransportRef.current = null;
+        deviceRef.current = null;
+        consumersRef.current.clear();
     };
 
 
-    // --- Mediasoup Logic ---
-    const initAndStartCall = async (peerId: string, type: CallType) => {
-        const roomName = getPrivateRoomName(peerId);
-        try {
-            // 1. Get Router Capabilities
-            socketRef.current.emit('getRouterRtpCapabilities', { roomName }, async (routerRtpCapabilities) => {
-                // 2. Create Device
-                const device = new mediasoupClient.Device();
-                await device.load({ routerRtpCapabilities });
-                deviceRef.current = device;
-
-                // 3. Join Room
-                socketRef.current.emit('joinRoom', { roomName });
-                
-                // 4. Create Transports
-                await createTransports(roomName);
-                
-                // 5. Start Media and Produce
-                await startMediaAndProduce(type);
-            });
-        } catch (error) {
-            console.error("Call initialization failed:", error);
-            handleEndCall();
+    // --- Render Logic ---
+    const renderView = () => {
+        switch(view) {
+            case 'chat':
+                return activeChatId && (
+                    <ChatView
+                        myId={myId}
+                        contactId={activeChatId}
+                        messages={messages[activeChatId] || []}
+                        onSendMessage={handleSendMessage}
+                        onBack={handleBackToContacts}
+                        onStartCall={() => handleStartCall(activeChatId)}
+                    />
+                );
+            case 'contacts':
+            default:
+                return (
+                    <ContactsView
+                        myId={myId}
+                        contacts={contacts}
+                        friendRequests={friendRequests}
+                        onAddContact={handleAddContact}
+                        onAcceptRequest={handleAcceptRequest}
+                        onSelectChat={handleSelectChat}
+                    />
+                );
         }
     };
     
-    const createTransports = async (roomName: string) => {
-        return new Promise<void>((resolve, reject) => {
-            const createTransport = (isSender: boolean, callback: (transport: mediasoupTypes.Transport) => void) => {
-                 socketRef.current.emit('createWebRtcTransport', { isSender }, (params) => {
-                    if (params.error) return reject(new Error(params.error));
-                    
-                    const transport = isSender
-                        ? deviceRef.current.createSendTransport(params)
-                        : deviceRef.current.createRecvTransport(params);
-
-                    transport.on('connect', ({ dtlsParameters }, cb, eb) => {
-                        socketRef.current.emit('connectTransport', { transportId: transport.id, dtlsParameters }, () => cb());
-                    });
-
-                    if (isSender) {
-                        transport.on('produce', async ({ kind, rtpParameters, appData }, cb, eb) => {
-                            socketRef.current.emit('produce', { transportId: transport.id, kind, rtpParameters, appData }, ({ id }) => {
-                                cb({ id });
-                            });
-                        });
-                    }
-                    callback(transport);
-                });
-            };
-
-            createTransport(true, (transport) => {
-                sendTransportRef.current = transport;
-                createTransport(false, (transport) => {
-                    recvTransportRef.current = transport;
-                    resolve();
-                });
-            });
-        });
-    };
-    
-    const startMediaAndProduce = async (type: CallType) => {
-        if (!sendTransportRef.current) return;
-        const constraints = {
-            audio: {
-                echoCancellation: true,
-                noiseSuppression: true,
-                autoGainControl: true,
-            },
-            video: false
-        };
-
-        try {
-            const stream = await navigator.mediaDevices.getUserMedia(constraints);
-            setLocalStream(stream);
-            
-            const audioTrack = stream.getAudioTracks()[0];
-            if (audioTrack) {
-                const audioProducer = await sendTransportRef.current.produce({ track: audioTrack });
-                producersRef.current.set(audioProducer.id, audioProducer);
-            }
-        } catch (error) {
-            console.error("Error getting user media:", error);
-            alert("Не удалось получить доступ к микрофону. Проверьте разрешения.");
-            handleEndCall();
-        }
-    };
-
-    // --- Clipboard ---
-    const copyToClipboard = () => {
-        navigator.clipboard.writeText(myId).then(() => {
-            setCopySuccess('Скопировано!');
-            setTimeout(() => setCopySuccess(''), 2000);
-        }, () => setCopySuccess('Ошибка'));
-    };
-
     return (
         <div className="app-container">
-            {callState === 'active' && activeChatId && <CallView myId={myId} peerId={activeChatId} onHangUp={() => handleEndCall(true)} localStream={localStream} remoteStream={remoteStream} />}
-            {callState === 'incoming' && incomingCallFrom && <IncomingCallModal fromId={incomingCallFrom} onAccept={handleAcceptCall} onDecline={handleDeclineCall} />}
-            {callState === 'outgoing' && <div className="call-modal-overlay"><div className="call-modal"><h3>Исходящий вызов...</h3><button onClick={() => handleEndCall(true)}>Отмена</button></div></div>}
-
-
-            <div className="main-ui" style={{ display: callState === 'active' ? 'none' : 'flex' }}>
+            <div className={`main-ui ${callState !== 'idle' ? 'hidden' : ''}`}>
                  <header className="header">
-                     <div className="header-menu">
-                         <button onClick={() => setIsMenuOpen(!isMenuOpen)} className="btn-menu" aria-label="Меню"><MoreVertIcon /></button>
+                    <div className="header-menu">
+                        <button className="btn-menu" onClick={() => setIsMenuOpen(!isMenuOpen)}>
+                            <MoreVertIcon />
+                        </button>
                         {isMenuOpen && (
                             <div className="dropdown-menu">
                                 <div className="device-id-section">
-                                    <span>Ваш ID для добавления:</span>
+                                    <span>Ваш уникальный ID:</span>
                                     <div className="id-container">
                                         <span className="device-id">{myId}</span>
-                                        <button onClick={copyToClipboard} className="btn-copy" aria-label="Копировать ID">{copySuccess ? <span>{copySuccess}</span> : <CopyIcon />}</button>
+                                        <button className="btn-copy" onClick={() => navigator.clipboard.writeText(myId)}>
+                                            <CopyIcon />
+                                        </button>
                                     </div>
                                 </div>
                             </div>
                         )}
                     </div>
                 </header>
-
                 <main className="main-content-area">
-                    {view === 'contacts' && (
-                        <ContactsView
-                            myId={myId}
-                            contacts={contacts}
-                            friendRequests={friendRequests}
-                            onAddContact={handleAddContact}
-                            onAcceptRequest={handleAcceptRequest}
-                            onSelectChat={handleSelectChat}
-                        />
-                    )}
-                    {view === 'chat' && activeChatId && (
-                        <ChatView
-                            myId={myId}
-                            contactId={activeChatId}
-                            messages={messages[activeChatId] || []}
-                            onSendMessage={handleSendMessage}
-                            onBack={handleBackToContacts}
-                            onStartCall={(type) => handleStartCall(activeChatId, type)}
-                        />
-                    )}
+                    {renderView()}
                 </main>
             </div>
+
+            {/* Call UI Overlays */}
+            {callState === 'incoming' && incomingCallFromId && (
+                <IncomingCallModal 
+                    fromId={incomingCallFromId}
+                    onAccept={handleAcceptCall}
+                    onDecline={handleDeclineCall}
+                />
+            )}
+             {callState === 'outgoing' && activeCallPeerId && (
+                <div className="call-modal-overlay">
+                    <div className="call-modal">
+                        <h3>Исходящий вызов</h3>
+                        <p><span>{activeCallPeerId.substring(0, 12)}...</span></p>
+                        <button onClick={handleEndCall} className="btn-decline">Отменить</button>
+                    </div>
+                </div>
+            )}
+            {callState === 'active' && activeCallPeerId && (
+                <CallView
+                    myId={myId}
+                    peerId={activeCallPeerId}
+                    onHangUp={handleEndCall}
+                    localStream={localStream}
+                    remoteStream={remoteStream}
+                />
+            )}
         </div>
     );
 };
 
 const container = document.getElementById('root');
-if (container) {
-    const root = createRoot(container);
-    root.render(<App />);
-}
+const root = createRoot(container!);
+root.render(<App />);
