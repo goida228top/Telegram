@@ -1,11 +1,10 @@
-
 import React, { useState, useRef, useEffect } from 'react';
 import { createRoot } from 'react-dom/client';
 import { io, Socket } from 'socket.io-client';
 import { Device } from 'mediasoup-client';
 import { Transport, Producer, Consumer } from 'mediasoup-client/lib/types';
 
-// A single stream will hold both audio and video tracks for a peer
+// --- Type Definitions ---
 type RemotePeerData = {
     stream: MediaStream | null;
     videoProducerId: string | null;
@@ -19,15 +18,22 @@ type AnalysisData = {
     animationFrameId: number;
 };
 
-// --- SVG Icons for Controls ---
+type Message = {
+    peerId: string;
+    message: string;
+    timestamp: number;
+};
+
+// --- SVG Icons ---
 const MicOnIcon = () => (<svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 0 24 24" width="24px" fill="currentColor"><path d="M0 0h24v24H0V0z" fill="none"/><path d="M12 14c1.66 0 2.99-1.34 2.99-3L15 5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c3.28-.48 6-3.3 6-6.72h-1.7z"/></svg>);
 const MicOffIcon = () => (<svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 0 24 24" width="24px" fill="currentColor"><path d="M0 0h24v24H0V0z" fill="none"/><path d="M19 11h-1.7c0 .74-.16 1.43-.43 2.05l1.23 1.23c.56-.98.9-2.09.9-3.28zm-4.02.17c0-.06.02-.12.02-.17V5c0-1.66-1.34-3-3-3S9 3.34 9 5v.18l5.98 5.99zM4.27 3L3 4.27l6.01 6.01V11c0 1.66 1.33 3 2.99 3 .22 0 .44-.03.65-.08l1.66 1.66c-.71.33-1.5.52-2.31.52-2.76 0-5.3-2.1-5.3-5.1H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c.91-.13 1.77-.45 2.55-.9L19.73 21 21 19.73 4.27 3z"/></svg>);
 const CamOnIcon = () => (<svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 0 24 24" width="24px" fill="currentColor"><path d="M0 0h24v24H0V0z" fill="none"/><path d="M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z"/></svg>);
 const CamOffIcon = () => (<svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 0 24 24" width="24px" fill="currentColor"><path d="M0 0h24v24H0V0z" fill="none"/><path d="M21 6.5l-4 4V7c0-.55-.45-1-1-1H9.82L21 17.18V6.5zM3.27 2L2 3.27 4.73 6H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.21 0 .39-.08.55-.18L19.73 21 21 19.73 3.27 2z"/></svg>);
 const AvatarIcon = () => (<svg className="avatar-icon" xmlns="http://www.w3.org/2000/svg" enableBackground="new 0 0 24 24" height="24px" viewBox="0 0 24 24" width="24px" fill="currentColor"><g><rect fill="none" height="24" width="24"/></g><g><path d="M12,12c2.21,0,4-1.79,4-4s-1.79-4-4-4S8,5.79,8,8S9.79,12,12,12z M12,14c-2.67,0-8,1.34-8,4v2h16v-2 C20,15.34,14.67,14,12,14z"/></g></svg>);
+const SendIcon = () => (<svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 0 24 24" width="24px" fill="currentColor"><path d="M0 0h24v24H0V0z" fill="none"/><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2 .01 7z"/></svg>);
 
+// --- Components ---
 
-// This component now handles a single combined stream for a peer.
 const RemotePeerComponent: React.FC<{
     peerData: RemotePeerData,
     isSpeaking: boolean
@@ -37,7 +43,6 @@ const RemotePeerComponent: React.FC<{
     useEffect(() => {
         if (videoRef.current && peerData.stream) {
             videoRef.current.srcObject = peerData.stream;
-            // Explicitly unmute remote streams
             videoRef.current.muted = false;
         }
     }, [peerData.stream]);
@@ -46,17 +51,109 @@ const RemotePeerComponent: React.FC<{
 
     return (
         <div className={`video-wrapper active ${isSpeaking ? 'speaking' : ''}`}>
-            {/* The video element is always rendered to play audio. Its visibility depends on a video track. */}
             <video ref={videoRef} autoPlay playsInline style={{ visibility: hasVideo ? 'visible' : 'hidden' }} />
-            
             {!hasVideo && <AvatarIcon />}
-
             <div className="video-label">Собеседник</div>
         </div>
     );
 };
 
+const ChatPanel: React.FC<{ 
+    messages: Message[],
+    localPeerId: string | null,
+    onSendMessage: (message: string) => void
+}> = ({ messages, localPeerId, onSendMessage }) => {
+    const [newMessage, setNewMessage] = useState('');
+    const messagesEndRef = useRef<HTMLDivElement>(null);
 
+    const scrollToBottom = () => {
+        messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    };
+
+    useEffect(scrollToBottom, [messages]);
+
+    const handleSubmit = (e: React.FormEvent) => {
+        e.preventDefault();
+        if (newMessage.trim()) {
+            onSendMessage(newMessage.trim());
+            setNewMessage('');
+        }
+    };
+
+    return (
+        <div className="chat-panel">
+            <div className="chat-messages">
+                {messages.map((msg) => (
+                    <div key={msg.timestamp} className={`message ${msg.peerId === localPeerId ? 'sent' : 'received'}`}>
+                        <div className="message-sender">{msg.peerId === localPeerId ? 'Вы' : 'Собеседник'}</div>
+                        {msg.message}
+                    </div>
+                ))}
+                <div ref={messagesEndRef} />
+            </div>
+            <form className="chat-form" onSubmit={handleSubmit}>
+                <input
+                    type="text"
+                    placeholder="Введите сообщение..."
+                    value={newMessage}
+                    onChange={(e) => setNewMessage(e.target.value)}
+                />
+                <button type="submit" aria-label="Отправить сообщение"><SendIcon/></button>
+            </form>
+        </div>
+    );
+};
+
+
+// --- Utility Functions ---
+const getMediaStream = async (prefersVideo: boolean): Promise<{ stream: MediaStream; videoEnabled: boolean }> => {
+    const audioConstraints = { echoCancellation: true, noiseSuppression: true };
+
+    if (!prefersVideo) {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
+            return { stream, videoEnabled: false };
+        } catch (err) {
+            console.error('Failed to get audio-only stream:', err);
+            throw err;
+        }
+    }
+
+    const videoConstraintsPresets = [
+        { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
+        { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
+        { facingMode: 'user' },
+        true
+    ];
+
+    let lastError: any = null;
+
+    for (const constraints of videoConstraintsPresets) {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({
+                video: constraints,
+                audio: audioConstraints
+            });
+            return { stream, videoEnabled: true };
+        } catch (err: any) {
+            lastError = err;
+            if (err.name !== 'OverconstrainedError' && err.name !== 'NotFoundError' && err.name !== 'NotReadableError') {
+                break;
+            }
+        }
+    }
+    
+    console.warn('All video attempts failed. Falling back to audio-only.');
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
+        return { stream, videoEnabled: false };
+    } catch (audioErr) {
+        console.error('Audio-only fallback also failed:', audioErr);
+        throw lastError || audioErr;
+    }
+};
+
+// --- Main App Component ---
 const App: React.FC = () => {
     const [roomName, setRoomName] = useState('');
     const [isConnected, setIsConnected] = useState(false);
@@ -67,6 +164,7 @@ const App: React.FC = () => {
     const [isMicOn, setIsMicOn] = useState(true);
     const [isCameraOn, setIsCameraOn] = useState(true);
     const [speakingStates, setSpeakingStates] = useState<Map<string, boolean>>(new Map());
+    const [messages, setMessages] = useState<Message[]>([]);
 
     const socketRef = useRef<Socket | null>(null);
     const deviceRef = useRef<Device | null>(null);
@@ -78,19 +176,12 @@ const App: React.FC = () => {
     const analysisRefs = useRef<Map<string, AnalysisData>>(new Map());
     const audioContextRef = useRef<AudioContext | null>(null);
 
-    // Function to unlock the AudioContext, crucial for autoplay policies
     const unlockAudio = async () => {
         if (!audioContextRef.current) {
              audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
         }
         if (audioContextRef.current.state === 'suspended') {
-            console.log('AudioContext is suspended, resuming...');
-            try {
-                await audioContextRef.current.resume();
-                console.log('AudioContext resumed successfully.');
-            } catch (err) {
-                console.error('Failed to resume AudioContext:', err);
-            }
+            await audioContextRef.current.resume();
         }
     };
 
@@ -134,7 +225,6 @@ const App: React.FC = () => {
             cancelAnimationFrame(analysisData.animationFrameId);
             analysisData.source.disconnect();
             analysisData.analyser.disconnect();
-            // We don't close the shared context here
             analysisRefs.current.delete(id);
         }
         setSpeakingStates(prev => {
@@ -151,33 +241,13 @@ const App: React.FC = () => {
             return;
         }
 
-        // --- KEY FIX: Unlock audio context on user gesture ---
         await unlockAudio();
+        setStatus('Запрос доступа...');
 
-        let stream: MediaStream;
-        let videoEnabled = callType === 'video';
-        
-        setStatus('Подключение...');
         try {
-            if (videoEnabled) {
-                try {
-                    stream = await navigator.mediaDevices.getUserMedia({
-                        video: { width: { ideal: 1280 }, height: { ideal: 720 } },
-                        audio: { echoCancellation: true, noiseSuppression: true }
-                    });
-                } catch (err: any) {
-                    console.warn('Не удалось получить видео, пробую только аудио:', err);
-                    if (err.name === 'NotReadableError' || err.name === 'NotFoundError' || err.name === 'OverconstrainedError') {
-                        setStatus('Камера недоступна, пробуем аудио...');
-                        videoEnabled = false;
-                        stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
-                    } else {
-                        throw err;
-                    }
-                }
-            } else {
-                stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
-            }
+            const { stream, videoEnabled } = await getMediaStream(callType === 'video');
+
+            setStatus(videoEnabled ? 'Подключение...' : 'Подключение в аудио-режиме...');
             
             setIsCameraOn(videoEnabled);
             setIsMicOn(true);
@@ -186,7 +256,7 @@ const App: React.FC = () => {
             if (localVideoRef.current) {
                 localVideoRef.current.srcObject = stream;
             }
-            setupAudioAnalysis(stream, 'local');
+            setupAudioAnalysis(stream, socketRef.current?.id || 'local');
 
             const socket = io({ path: '/socket.io/' });
             socketRef.current = socket;
@@ -239,6 +309,10 @@ const App: React.FC = () => {
                 if (peerId === socket.id) return;
                 consume(producerId, appData.mediaType, peerId);
             });
+            
+            socket.on('newMessage', ({ peerId, message }) => {
+                setMessages(prev => [...prev, { peerId, message, timestamp: Date.now() }]);
+            });
 
             socket.on('producer-closed', ({ producerId }) => {
                 const consumer = consumers.get(producerId);
@@ -249,7 +323,7 @@ const App: React.FC = () => {
                     setConsumers(newConsumers);
                 }
                 
-                setRemotePeers(prev => {
+                setRemotePeers((prev: Map<string, RemotePeerData>) => {
                     const newPeers = new Map(prev);
                     let peerIdToUpdate: string | null = null;
                     
@@ -273,9 +347,8 @@ const App: React.FC = () => {
                             if (remainingTracks.length > 0) {
                                 const newData = { ...oldData };
                                 newData.stream = new MediaStream(remainingTracks);
-                                if (isVideo) {
-                                    newData.videoProducerId = null;
-                                } else {
+                                if (isVideo) newData.videoProducerId = null;
+                                else {
                                     newData.audioProducerId = null;
                                     stopAudioAnalysis(peerIdToUpdate);
                                 }
@@ -298,18 +371,21 @@ const App: React.FC = () => {
                 cleanUp();
             });
 
-        } catch (error) {
-            console.error('Не удалось получить доступ к камере или микрофону:', error);
-            setStatus('Ошибка: нет доступа к камере/микрофону');
+        } catch (error: any) {
+            console.error('Error joining room:', error);
+            if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
+                setStatus('Ошибка: вы не разрешили доступ к камере/микрофону.');
+            } else if (error.name === 'NotFoundError' || error.name === 'DevicesNotFoundError') {
+                 setStatus('Ошибка: камера или микрофон не найдены.');
+            } else {
+                setStatus('Ошибка: нет доступа к камере/микрофону');
+            }
             cleanUp();
         }
     };
     
     const produceStream = async (stream: MediaStream) => {
-        if (!sendTransportRef.current) {
-            console.error("Send transport is not ready.");
-            return;
-        }
+        if (!sendTransportRef.current) return;
         const videoTrack = stream.getVideoTracks()[0];
         const audioTrack = stream.getAudioTracks()[0];
         
@@ -322,15 +398,11 @@ const App: React.FC = () => {
     };
 
     const consume = async (producerId: string, mediaType: 'video' | 'audio', peerId: string) => {
-        if (!deviceRef.current || !socketRef.current || !recvTransportRef.current) {
-            return;
-        }
+        if (!deviceRef.current || !socketRef.current || !recvTransportRef.current) return;
+
         const { rtpCapabilities } = deviceRef.current;
         socketRef.current.emit('consume', { producerId, rtpCapabilities }, async (params: any) => {
-            if (params.error) {
-                console.error('Ошибка создания консьюмера:', params.error);
-                return;
-            }
+            if (params.error) return console.error('Consume error:', params.error);
 
             const consumer = await recvTransportRef.current!.consume(params);
             socketRef.current!.emit('resume', { consumerId: consumer.id });
@@ -339,21 +411,19 @@ const App: React.FC = () => {
 
             const { track } = consumer;
             
-            setRemotePeers(prev => {
+            setRemotePeers((prev: Map<string, RemotePeerData>) => {
                 const newPeers = new Map(prev);
                 const oldData = newPeers.get(peerId);
                 const existingTracks = oldData?.stream?.getTracks().filter(t => t.kind !== track.kind) || [];
                 const newStream = new MediaStream([...existingTracks, track]);
         
-                const newData = {
+                const newData: RemotePeerData = {
                     stream: newStream,
                     videoProducerId: mediaType === 'video' ? producerId : oldData?.videoProducerId || null,
                     audioProducerId: mediaType === 'audio' ? producerId : oldData?.audioProducerId || null,
                 };
         
-                if (mediaType === 'audio') {
-                    setupAudioAnalysis(newStream, peerId);
-                }
+                if (mediaType === 'audio') setupAudioAnalysis(newStream, peerId);
         
                 newPeers.set(peerId, newData);
                 return newPeers;
@@ -361,8 +431,15 @@ const App: React.FC = () => {
         });
     };
     
+    const handleSendMessage = (message: string) => {
+        if (socketRef.current && roomName) {
+            socketRef.current.emit('sendMessage', { roomName, message });
+            setMessages(prev => [...prev, { peerId: socketRef.current!.id, message, timestamp: Date.now() }]);
+        }
+    };
+    
     const cleanUp = () => {
-        stopAudioAnalysis('local');
+        stopAudioAnalysis(socketRef.current?.id || 'local');
         analysisRefs.current.forEach((_, id) => stopAudioAnalysis(id));
 
         if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
@@ -381,6 +458,7 @@ const App: React.FC = () => {
         setRemotePeers(new Map());
         setConsumers(new Map());
         setSpeakingStates(new Map());
+        setMessages([]);
     };
 
     const leaveRoom = () => {
@@ -388,7 +466,6 @@ const App: React.FC = () => {
         setStatus('Отключено');
         setRoomName('');
     };
-
 
     const toggleMic = () => {
         if (localStream) {
@@ -409,31 +486,39 @@ const App: React.FC = () => {
     return (
         <div className="app-container">
             <header className="header">
-                <h1>RuGram Call</h1>
-                <p>Видеозвонки через выделенный сервер</p>
+                <h1>RuGram</h1>
+                <div className={`status ${isConnected ? 'status-connected' : 'status-disconnected'}`}>
+                    Статус: <strong>{status}</strong>
+                </div>
             </header>
 
-            <div className={`status ${isConnected ? 'status-connected' : 'status-disconnected'}`}>
-                Статус: <strong>{status}</strong>
-            </div>
-
-            <div className="videos-container">
-                <div className={`video-wrapper ${localStream ? 'active' : ''} ${speakingStates.get('local') ? 'speaking' : ''}`}>
-                    {isCameraOn && localStream?.getVideoTracks().length > 0 ? (
-                        <video ref={localVideoRef} className="local-video" autoPlay playsInline muted />
-                    ) : <AvatarIcon />}
-                    <div className="video-label">Вы</div>
+            <main className={`main-content ${isConnected ? 'in-call' : ''}`}>
+                <div className="videos-container">
+                    <div className={`video-wrapper ${localStream ? 'active' : ''} ${speakingStates.get(socketRef.current?.id || 'local') ? 'speaking' : ''}`}>
+                        {isCameraOn && localStream?.getVideoTracks().length > 0 ? (
+                            <video ref={localVideoRef} className="local-video" autoPlay playsInline muted />
+                        ) : <AvatarIcon />}
+                        <div className="video-label">Вы</div>
+                    </div>
+                    {Array.from(remotePeers.entries()).map(([peerId, peerData]) => (
+                        <RemotePeerComponent
+                            key={peerId}
+                            peerData={peerData}
+                            isSpeaking={!!speakingStates.get(peerId)}
+                        />
+                    ))}
                 </div>
-                {Array.from(remotePeers.entries()).map(([peerId, peerData]) => (
-                    <RemotePeerComponent
-                        key={peerId}
-                        peerData={peerData}
-                        isSpeaking={!!speakingStates.get(peerId)}
-                    />
-                ))}
-            </div>
 
-            <div className="controls-container">
+                {isConnected && (
+                    <ChatPanel 
+                        messages={messages} 
+                        localPeerId={socketRef.current?.id || null} 
+                        onSendMessage={handleSendMessage} 
+                    />
+                )}
+            </main>
+
+            <footer className="controls-container">
                 {!isConnected ? (
                     <div className="room-controls">
                         <input
@@ -462,7 +547,7 @@ const App: React.FC = () => {
                         </button>
                     </div>
                 )}
-            </div>
+            </footer>
         </div>
     );
 };

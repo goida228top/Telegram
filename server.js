@@ -1,4 +1,4 @@
-// RuGram Media Server v4.1 (стабильная версия с улучшенным запуском)
+// RuGram Media Server v4.2 (с поддержкой чата)
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -84,6 +84,11 @@ async function run() {
 
                 callback(existingProducers);
             });
+            
+            socket.on('sendMessage', ({ roomName, message }) => {
+                // Broadcast to everyone in the room except the sender
+                socket.to(roomName).emit('newMessage', { peerId: socket.id, message });
+            });
 
             socket.on('createWebRtcTransport', async ({ isSender }, callback) => {
                 const room = rooms[currentRoomName];
@@ -95,7 +100,7 @@ async function run() {
                     enableUdp: true,
                     enableTcp: true,
                     preferUdp: true,
-                    appData: { isSender } // Store if it's a sender transport
+                    appData: { isSender }
                 });
                 
                 const peer = room.peers.get(socket.id);
@@ -117,7 +122,6 @@ async function run() {
                 const transport = peer.transports.get(transportId);
                 if (!transport) return;
                 
-                console.log(`[INFO] Peer ${socket.id} connecting transport ${transport.id}`);
                 await transport.connect({ dtlsParameters });
                 callback();
             });
@@ -130,11 +134,9 @@ async function run() {
                 const transport = peer.transports.get(transportId);
                 if (!transport) return;
                 
-                console.log(`[INFO] Peer ${socket.id} producing ${kind}`);
                 const producer = await transport.produce({ kind, rtpParameters, appData });
                 peer.producers.set(producer.id, producer);
                 
-                // Inform other peers in the room
                 socket.to(currentRoomName).emit('new-producer', { producerId: producer.id, appData: producer.appData, peerId: socket.id });
                 
                 callback({ id: producer.id });
@@ -143,22 +145,15 @@ async function run() {
             socket.on('consume', async ({ producerId, rtpCapabilities }, callback) => {
                 const room = rooms[currentRoomName];
                 if (!room || !room.router.canConsume({ producerId, rtpCapabilities })) {
-                    console.error(`[ERROR] Peer ${socket.id} cannot consume producer ${producerId}`);
                     return callback({ error: 'Cannot consume' });
                 }
                 
                 const peer = room.peers.get(socket.id);
-                if (!peer) {
-                    return callback({ error: 'Peer not found' });
-                }
+                if (!peer) return callback({ error: 'Peer not found' });
 
                 const transport = Array.from(peer.transports.values()).find(t => t.appData.isSender !== true);
-                if (!transport) {
-                    console.error(`[ERROR] Peer ${socket.id} has no recv transport`);
-                    return callback({ error: 'No recv transport found' });
-                }
+                if (!transport) return callback({ error: 'No recv transport found' });
                 
-                console.log(`[INFO] Peer ${socket.id} consuming producer ${producerId}`);
                 try {
                     const consumer = await transport.consume({
                         producerId,
@@ -168,7 +163,6 @@ async function run() {
                     peer.consumers.set(consumer.id, consumer);
                     
                     consumer.on('producerclose', () => {
-                         console.log(`[INFO] Consumer for peer ${socket.id} closed because producer ${producerId} closed`);
                          socket.emit('producer-closed', { producerId });
                     });
     
@@ -192,7 +186,6 @@ async function run() {
                 const consumer = peer.consumers.get(consumerId);
                 if (!consumer) return;
 
-                console.log(`[INFO] Peer ${socket.id} resuming consumer ${consumerId}`);
                 await consumer.resume();
             });
 
