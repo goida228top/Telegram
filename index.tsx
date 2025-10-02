@@ -330,12 +330,28 @@ const App: React.FC = () => {
                                 });
                             });
 
+                            sendTransport.on('connectionstatechange', (state) => {
+                                if (state === 'failed') {
+                                    console.error('Send transport connection failed');
+                                    setStatus('Ошибка: Не удалось подключиться к медиа-серверу.');
+                                    sendTransport.close();
+                                }
+                            });
+
                             socket.emit('createWebRtcTransport', { isSender: false }, async (recvParams: any) => {
                                 const recvTransport = device.createRecvTransport(recvParams);
                                 recvTransportRef.current = recvTransport;
 
                                 recvTransport.on('connect', ({ dtlsParameters }, callback, errback) => {
                                     socket.emit('connectTransport', { transportId: recvTransport.id, dtlsParameters }, callback);
+                                });
+
+                                recvTransport.on('connectionstatechange', (state) => {
+                                    if (state === 'failed') {
+                                        console.error('Receive transport connection failed');
+                                        setStatus('Ошибка: Не удалось получить медиа-данные.');
+                                        recvTransport.close();
+                                    }
                                 });
 
                                 setStatus(`В комнате: ${roomName}`);
