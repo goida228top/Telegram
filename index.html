@@ -25,9 +25,7 @@
       color: var(--text-color);
       display: flex;
       justify-content: center;
-      align-items: flex-start;
       min-height: 100vh;
-      padding: 2rem;
     }
     #root {
       width: 100%;
@@ -36,20 +34,107 @@
     .app-container {
       display: flex;
       flex-direction: column;
-      gap: 1.5rem;
+      height: 100vh;
+      width: 100%;
     }
+
+    /* --- Header --- */
     .header {
-      text-align: center;
+      background-color: var(--surface-color);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0 1rem;
+      height: 60px;
+      flex-shrink: 0;
+      position: sticky;
+      top: 0;
+      z-index: 10;
     }
-    .header h1 {
-      margin: 0 0 0.5rem 0;
-      font-size: 2.5rem;
+    .header-title h1 {
+      margin: 0;
+      font-size: 1.5rem;
       color: var(--primary-color);
     }
-    .header p {
-      margin: 0;
-      font-size: 1.1rem;
+    .header-menu {
+      position: relative;
+    }
+    .btn-menu {
+      background: none;
+      border: none;
+      color: var(--text-color);
+      cursor: pointer;
+      padding: 0.5rem;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .btn-menu:hover {
+      background-color: rgba(255, 255, 255, 0.1);
+    }
+    .dropdown-menu {
+      position: absolute;
+      top: 100%;
+      right: 0;
+      background-color: #2a2a2a;
+      border-radius: var(--border-radius);
+      padding: 1rem;
+      width: 300px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      z-index: 11;
+    }
+    .device-id-section {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+    .device-id-section > span {
+      font-size: 0.9rem;
       color: #9e9e9e;
+    }
+    .id-container {
+      display: flex;
+      align-items: center;
+      background-color: var(--background-color);
+      padding: 0.5rem;
+      border-radius: 8px;
+    }
+    .device-id {
+      flex-grow: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      font-family: monospace;
+      font-size: 0.9rem;
+    }
+    .btn-copy {
+      background: none;
+      border: none;
+      color: var(--secondary-color);
+      cursor: pointer;
+      padding: 0.25rem;
+      display: flex;
+      align-items: center;
+    }
+    .btn-copy svg { width: 20px; height: 20px; }
+    .btn-copy span { font-size: 0.8rem; }
+
+
+    /* --- Main Content --- */
+    .main-content-area {
+      display: flex;
+      gap: 1.5rem;
+      align-items: flex-start;
+      flex-grow: 1;
+      padding: 1.5rem;
+      overflow-y: auto;
+    }
+    .videos-and-status {
+      flex-grow: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
     }
     .status {
       text-align: center;
@@ -67,17 +152,6 @@
     .status-disconnected {
         color: var(--error-color);
         border-color: var(--error-color);
-    }
-    .main-content-area {
-      display: flex;
-      gap: 1.5rem;
-      align-items: flex-start;
-    }
-    .videos-and-status {
-      flex-grow: 1;
-      display: flex;
-      flex-direction: column;
-      gap: 1.5rem;
     }
     .videos-container {
       display: grid;
@@ -128,12 +202,15 @@
         height: 40%;
         color: #757575;
     }
+    
+    /* --- Controls --- */
     .controls-container {
       display: flex;
       justify-content: center;
       background-color: var(--surface-color);
       padding: 1.5rem;
-      border-radius: var(--border-radius);
+      border-top: 1px solid #424242;
+      flex-shrink: 0;
     }
     .room-controls, .call-controls {
       display: flex;
@@ -215,7 +292,8 @@
     .btn-end-call:hover:not(:disabled) {
         background-color: #ff8a80;
     }
-    /* --- Chat Panel Styles --- */
+    
+    /* --- Chat Panel --- */
     .chat-panel {
       width: 380px;
       flex-shrink: 0;
@@ -276,6 +354,48 @@
       min-width: 80px;
     }
 
+    /* --- Mobile Responsive Styles --- */
+    @media (max-width: 768px) {
+        .app-container {
+          /* Add padding to prevent content from being hidden by fixed controls */
+          padding-bottom: 90px; 
+        }
+        .header {
+          height: 56px;
+        }
+        .header-title h1 {
+          font-size: 1.25rem;
+        }
+        .main-content-area {
+            flex-direction: column;
+            padding: 1rem;
+        }
+        .chat-panel {
+            width: 100%;
+            height: 60vh; /* Give chat a fixed height on mobile */
+        }
+        .controls-container {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            border-top: 1px solid #424242;
+            padding: 1rem;
+            z-index: 5;
+        }
+        .room-controls {
+            flex-wrap: wrap;
+        }
+        .room-controls input {
+            flex-basis: 100%;
+        }
+        .room-controls button {
+            flex-grow: 1;
+        }
+        .videos-container {
+            grid-template-columns: 1fr; /* Single column layout for videos */
+        }
+    }
   </style>
 <script type="importmap">
 {

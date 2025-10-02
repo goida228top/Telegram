@@ -35,6 +35,8 @@ const MicOffIcon = () => (<svg xmlns="http://www.w3.org/2000/svg" height="24px" 
 const CamOnIcon = () => (<svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 0 24 24" width="24px" fill="currentColor"><path d="M0 0h24v24H0V0z" fill="none"/><path d="M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z"/></svg>);
 const CamOffIcon = () => (<svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 0 24 24" width="24px" fill="currentColor"><path d="M0 0h24v24H0V0z" fill="none"/><path d="M21 6.5l-4 4V7c0-.55-.45-1-1-1H9.82L21 17.18V6.5zM3.27 2L2 3.27 4.73 6H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.21 0 .39-.08.55-.18L19.73 21 21 19.73 3.27 2z"/></svg>);
 const AvatarIcon = () => (<svg className="avatar-icon" xmlns="http://www.w3.org/2000/svg" enableBackground="new 0 0 24 24" height="24px" viewBox="0 0 24 24" width="24px" fill="currentColor"><g><rect fill="none" height="24" width="24"/></g><g><path d="M12,12c2.21,0,4-1.79,4-4s-1.79-4-4-4S8,5.79,8,8S9.79,12,12,12z M12,14c-2.67,0-8,1.34-8,4v2h16v-2 C20,15.34,14.67,14,12,14z"/></g></svg>);
+const MoreVertIcon = () => (<svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 0 24 24" width="24px" fill="currentColor"><path d="M0 0h24v24H0V0z" fill="none"/><path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>);
+const CopyIcon = () => (<svg xmlns="http://www.w3.org/2000/svg" enableBackground="new 0 0 24 24" height="24px" viewBox="0 0 24 24" width="24px" fill="currentColor"><g><rect fill="none" height="24" width="24"/></g><g><path d="M16,1H4C2.9,1,2,1.9,2,3v14h2V3h12V1z M19,5H8C6.9,5,6,5.9,6,7v14c0,1.1,0.9,2,2,2h11c1.1,0,2-0.9,2-2V7C21,5.9,20.1,5,19,5z M19,21H8V7h11V21z"/></g></svg>);
 
 
 // This component now handles a single combined stream for a peer.
@@ -192,6 +194,9 @@ const App: React.FC = () => {
     const [speakingStates, setSpeakingStates] = useState<Map<string, boolean>>(new Map());
     const [joinMode, setJoinMode] = useState<JoinMode | null>(null);
     const [messages, setMessages] = useState<ChatMessage[]>([]);
+    const [deviceId, setDeviceId] = useState<string | null>(null);
+    const [isMenuOpen, setIsMenuOpen] = useState(false);
+    const [copySuccess, setCopySuccess] = useState('');
 
     const socketRef = useRef<Socket | null>(null);
     const deviceRef = useRef<Device | null>(null);
@@ -202,6 +207,32 @@ const App: React.FC = () => {
     const localVideoRef = useRef<HTMLVideoElement>(null);
     const analysisRefs = useRef<Map<string, AnalysisData>>(new Map());
     const audioContextRef = useRef<AudioContext | null>(null);
+
+    useEffect(() => {
+        const getOrSetDeviceId = () => {
+            const storedId = localStorage.getItem('rugram-device-id');
+            if (storedId) {
+                setDeviceId(storedId);
+                return;
+            }
+            const newId = crypto.randomUUID();
+            localStorage.setItem('rugram-device-id', newId);
+            setDeviceId(newId);
+        };
+        getOrSetDeviceId();
+    }, []);
+
+    const copyToClipboard = () => {
+        if (!deviceId) return;
+        navigator.clipboard.writeText(deviceId).then(() => {
+            setCopySuccess('Скопировано!');
+            setTimeout(() => setCopySuccess(''), 2000);
+        }, (err) => {
+            console.error('Could not copy text: ', err);
+            setCopySuccess('Ошибка');
+            setTimeout(() => setCopySuccess(''), 2000);
+        });
+    };
 
     const unlockAudio = async () => {
         if (!audioContextRef.current) {
@@ -321,6 +352,7 @@ const App: React.FC = () => {
                             sendTransportRef.current = sendTransport;
 
                             sendTransport.on('connect', ({ dtlsParameters }, callback, errback) => {
+                                console.log('[local] Send transport connecting...');
                                 socket.emit('connectTransport', { transportId: sendTransport.id, dtlsParameters }, callback);
                             });
 
@@ -344,6 +376,7 @@ const App: React.FC = () => {
                                 recvTransportRef.current = recvTransport;
 
                                 recvTransport.on('connect', ({ dtlsParameters }, callback, errback) => {
+                                    console.log('[local] Receive transport connecting...');
                                     socket.emit('connectTransport', { transportId: recvTransport.id, dtlsParameters }, callback);
                                 });
 
@@ -583,8 +616,27 @@ const App: React.FC = () => {
     return (
         <div className="app-container">
             <header className="header">
-                <h1>RuGram Call</h1>
-                <p>Видеозвонки через выделенный сервер</p>
+                <div className="header-title">
+                    <h1>RuGram Call</h1>
+                </div>
+                <div className="header-menu">
+                     <button onClick={() => setIsMenuOpen(!isMenuOpen)} className="btn-menu" aria-label="Меню">
+                        <MoreVertIcon />
+                    </button>
+                    {isMenuOpen && (
+                        <div className="dropdown-menu">
+                            <div className="device-id-section">
+                                <span>Ваш ID:</span>
+                                <div className="id-container">
+                                    <span className="device-id">{deviceId}</span>
+                                    <button onClick={copyToClipboard} className="btn-copy" aria-label="Копировать ID">
+                                        {copySuccess ? <span>{copySuccess}</span> : <CopyIcon />}
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </div>
             </header>
 
             <div className="main-content-area">
