@@ -195,6 +195,16 @@ async function run() {
                 console.log(`[INFO] Peer ${socket.id} resuming consumer ${consumerId}`);
                 await consumer.resume();
             });
+            
+            socket.on('chatMessage', ({ roomName, message }) => {
+                if (!roomName || typeof message !== 'string' || message.trim() === '' || !rooms[roomName]) {
+                    console.log(`[WARN] Invalid chat message received from ${socket.id}`);
+                    return;
+                }
+                console.log(`[INFO] Chat message in room ${roomName} from ${socket.id}: ${message}`);
+                // Broadcast to all clients in the room, including the sender.
+                io.to(roomName).emit('newChatMessage', { peerId: socket.id, message: message.trim() });
+            });
 
             socket.on('disconnect', () => {
                 if (!currentRoomName) return;

@@ -20,6 +20,15 @@ type AnalysisData = {
     animationFrameId: number;
 };
 
+type ChatMessage = {
+    peerId: string;
+    text: string;
+    id: string;
+};
+
+type JoinMode = 'video' | 'audio' | 'chat';
+
+
 // --- SVG Icons for Controls ---
 const MicOnIcon = () => (<svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 0 24 24" width="24px" fill="currentColor"><path d="M0 0h24v24H0V0z" fill="none"/><path d="M12 14c1.66 0 2.99-1.34 2.99-3L15 5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c3.28-.48 6-3.3 6-6.72h-1.7z"/></svg>);
 const MicOffIcon = () => (<svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 0 24 24" width="24px" fill="currentColor"><path d="M0 0h24v24H0V0z" fill="none"/><path d="M19 11h-1.7c0 .74-.16 1.43-.43 2.05l1.23 1.23c.56-.98.9-2.09.9-3.28zm-4.02.17c0-.06.02-.12.02-.17V5c0-1.66-1.34-3-3-3S9 3.34 9 5v.18l5.98 5.99zM4.27 3L3 4.27l6.01 6.01V11c0 1.66 1.33 3 2.99 3 .22 0 .44-.03.65-.08l1.66 1.66c-.71.33-1.5.52-2.31.52-2.76 0-5.3-2.1-5.3-5.1H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c.91-.13 1.77-.45 2.55-.9L19.73 21 21 19.73 4.27 3z"/></svg>);
@@ -122,6 +131,55 @@ const getMediaStream = async (prefersVideo: boolean): Promise<{ stream: MediaStr
     }
 };
 
+const ChatPanel: React.FC<{
+    messages: ChatMessage[];
+    onSendMessage: (text: string) => void;
+    myPeerId: string | undefined;
+}> = ({ messages, onSendMessage, myPeerId }) => {
+    const [chatInput, setChatInput] = useState('');
+    const messagesEndRef = useRef<HTMLDivElement>(null);
+
+    const scrollToBottom = () => {
+        messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    };
+
+    useEffect(scrollToBottom, [messages]);
+
+    const handleSendMessage = (e: React.FormEvent) => {
+        e.preventDefault();
+        if (chatInput.trim()) {
+            onSendMessage(chatInput.trim());
+            setChatInput('');
+        }
+    };
+
+    return (
+        <div className="chat-panel">
+            <div className="chat-header">Чат комнаты</div>
+            <div className="chat-messages">
+                {messages.map(msg => (
+                    <div key={msg.id} className={`chat-message ${msg.peerId === myPeerId ? 'local' : 'remote'}`}>
+                        <span className="sender">{msg.peerId === myPeerId ? 'Вы' : `Собеседник ${msg.peerId.substring(0, 4)}`}</span>
+                        {msg.text}
+                    </div>
+                ))}
+                 <div ref={messagesEndRef} />
+            </div>
+            <form onSubmit={handleSendMessage} className="chat-input-form">
+                <input
+                    type="text"
+                    value={chatInput}
+                    onChange={e => setChatInput(e.target.value)}
+                    placeholder="Введите сообщение..."
+                    aria-label="Сообщение в чат"
+                />
+                <button type="submit">Отправить</button>
+            </form>
+        </div>
+    );
+};
+
+
 const App: React.FC = () => {
     const [roomName, setRoomName] = useState('');
     const [isConnected, setIsConnected] = useState(false);
@@ -132,6 +190,8 @@ const App: React.FC = () => {
     const [isMicOn, setIsMicOn] = useState(true);
     const [isCameraOn, setIsCameraOn] = useState(true);
     const [speakingStates, setSpeakingStates] = useState<Map<string, boolean>>(new Map());
+    const [joinMode, setJoinMode] = useState<JoinMode | null>(null);
+    const [messages, setMessages] = useState<ChatMessage[]>([]);
 
     const socketRef = useRef<Socket | null>(null);
     const deviceRef = useRef<Device | null>(null);
@@ -143,7 +203,6 @@ const App: React.FC = () => {
     const analysisRefs = useRef<Map<string, AnalysisData>>(new Map());
     const audioContextRef = useRef<AudioContext | null>(null);
 
-    // Function to unlock the AudioContext, crucial for autoplay policies
     const unlockAudio = async () => {
         if (!audioContextRef.current) {
              audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
@@ -199,7 +258,6 @@ const App: React.FC = () => {
             cancelAnimationFrame(analysisData.animationFrameId);
             analysisData.source.disconnect();
             analysisData.analyser.disconnect();
-            // We don't close the shared context here
             analysisRefs.current.delete(id);
         }
         setSpeakingStates(prev => {
@@ -210,33 +268,42 @@ const App: React.FC = () => {
         });
     };
 
-    const joinRoom = async (callType: 'video' | 'audio') => {
+    const joinRoom = async (callType: JoinMode) => {
         if (!roomName.trim()) {
             alert('Пожалуйста, введите название комнаты.');
             return;
         }
 
+        setJoinMode(callType);
         await unlockAudio();
-        setStatus('Запрос доступа к камере и микрофону...');
+
+        let stream: MediaStream | null = null;
+        let videoEnabled = false;
 
         try {
-            const prefersVideo = callType === 'video';
-            const { stream, videoEnabled } = await getMediaStream(prefersVideo);
+            if (callType !== 'chat') {
+                setStatus('Запрос доступа к камере и микрофону...');
+                const prefersVideo = callType === 'video';
+                const mediaData = await getMediaStream(prefersVideo);
+                stream = mediaData.stream;
+                videoEnabled = mediaData.videoEnabled;
 
-            if (prefersVideo && !videoEnabled) {
-                setStatus('Камера недоступна, подключение в аудио-режиме...');
-            } else {
-                setStatus('Подключение...');
+                if (prefersVideo && !videoEnabled) {
+                    setStatus('Камера недоступна, подключение в аудио-режиме...');
+                }
             }
             
+            setStatus('Подключение...');
             setIsCameraOn(videoEnabled);
-            setIsMicOn(true);
+            setIsMicOn(callType !== 'chat');
             
-            setLocalStream(stream);
-            if (localVideoRef.current) {
-                localVideoRef.current.srcObject = stream;
+            if (stream) {
+                setLocalStream(stream);
+                if (localVideoRef.current) {
+                    localVideoRef.current.srcObject = stream;
+                }
+                setupAudioAnalysis(stream, 'local');
             }
-            setupAudioAnalysis(stream, 'local');
 
             const socket = io({ path: '/socket.io/' });
             socketRef.current = socket;
@@ -274,7 +341,9 @@ const App: React.FC = () => {
                                 setStatus(`В комнате: ${roomName}`);
                                 setIsConnected(true);
                                 
-                                await produceStream(stream);
+                                if (stream) {
+                                    await produceStream(stream);
+                                }
 
                                 for (const producerInfo of existingProducers) {
                                    consume(producerInfo.id, producerInfo.appData.mediaType, producerInfo.peerId);
@@ -290,6 +359,11 @@ const App: React.FC = () => {
                 consume(producerId, appData.mediaType, peerId);
             });
 
+            socket.on('newChatMessage', ({ peerId, message }) => {
+                const newMessage: ChatMessage = { peerId, text: message, id: `${Date.now()}-${peerId}` };
+                setMessages(prev => [...prev, newMessage]);
+            });
+
             socket.on('producer-closed', ({ producerId }) => {
                 const consumer = consumers.get(producerId);
                 if (consumer) {
@@ -299,7 +373,6 @@ const App: React.FC = () => {
                     setConsumers(newConsumers);
                 }
                 
-                // FIX: Explicitly typing the 'prev' parameter to ensure correct type inference for the state map.
                 setRemotePeers((prev: Map<string, RemotePeerData>) => {
                     const newPeers = new Map(prev);
                     let peerIdToUpdate: string | null = null;
@@ -396,7 +469,6 @@ const App: React.FC = () => {
 
             const { track } = consumer;
             
-            // FIX: Explicitly typing the 'prev' parameter to ensure correct type inference for the state map.
             setRemotePeers((prev: Map<string, RemotePeerData>) => {
                 const newPeers = new Map(prev);
                 const oldData = newPeers.get(peerId);
@@ -439,6 +511,8 @@ const App: React.FC = () => {
         setRemotePeers(new Map());
         setConsumers(new Map());
         setSpeakingStates(new Map());
+        setMessages([]);
+        setJoinMode(null);
     };
 
     const leaveRoom = () => {
@@ -464,6 +538,14 @@ const App: React.FC = () => {
         }
     };
 
+    const handleSendMessage = (text: string) => {
+        if (socketRef.current) {
+            socketRef.current.emit('chatMessage', { roomName, message: text });
+        }
+    };
+
+    const isMediaActive = joinMode === 'audio' || joinMode === 'video';
+
     return (
         <div className="app-container">
             <header className="header">
@@ -471,25 +553,37 @@ const App: React.FC = () => {
                 <p>Видеозвонки через выделенный сервер</p>
             </header>
 
-            <div className={`status ${isConnected ? 'status-connected' : 'status-disconnected'}`}>
-                Статус: <strong>{status}</strong>
+            <div className="main-content-area">
+                <div className="videos-and-status">
+                    <div className={`status ${isConnected ? 'status-connected' : 'status-disconnected'}`}>
+                        Статус: <strong>{status}</strong>
+                    </div>
+
+                    <div className="videos-container">
+                        <div className={`video-wrapper ${localStream || isConnected ? 'active' : ''} ${speakingStates.get('local') ? 'speaking' : ''}`}>
+                            {isCameraOn && localStream?.getVideoTracks().length > 0 ? (
+                                <video ref={localVideoRef} className="local-video" autoPlay playsInline muted />
+                            ) : ( isConnected && <AvatarIcon /> )}
+                            {isConnected && <div className="video-label">Вы</div>}
+                        </div>
+                        {Array.from(remotePeers.entries()).map(([peerId, peerData]) => (
+                            <RemotePeerComponent
+                                key={peerId}
+                                peerData={peerData}
+                                isSpeaking={!!speakingStates.get(peerId)}
+                            />
+                        ))}
+                    </div>
+                </div>
+                {isConnected && (
+                    <ChatPanel
+                        messages={messages}
+                        onSendMessage={handleSendMessage}
+                        myPeerId={socketRef.current?.id}
+                    />
+                )}
             </div>
 
-            <div className="videos-container">
-                <div className={`video-wrapper ${localStream ? 'active' : ''} ${speakingStates.get('local') ? 'speaking' : ''}`}>
-                    {isCameraOn && localStream?.getVideoTracks().length > 0 ? (
-                        <video ref={localVideoRef} className="local-video" autoPlay playsInline muted />
-                    ) : <AvatarIcon />}
-                    <div className="video-label">Вы</div>
-                </div>
-                {Array.from(remotePeers.entries()).map(([peerId, peerData]) => (
-                    <RemotePeerComponent
-                        key={peerId}
-                        peerData={peerData}
-                        isSpeaking={!!speakingStates.get(peerId)}
-                    />
-                ))}
-            </div>
 
             <div className="controls-container">
                 {!isConnected ? (
@@ -500,6 +594,9 @@ const App: React.FC = () => {
                             value={roomName}
                             onChange={(e) => setRoomName(e.target.value)}
                         />
+                        <button onClick={() => joinRoom('chat')} disabled={!roomName.trim()}>
+                           Войти в чат
+                        </button>
                         <button onClick={() => joinRoom('audio')} disabled={!roomName.trim()}>
                            Аудиозвонок
                         </button>
@@ -509,10 +606,10 @@ const App: React.FC = () => {
                     </div>
                 ) : (
                     <div className="call-controls">
-                        <button onClick={toggleMic} className={`btn-control ${isMicOn ? '' : 'toggled-off'}`} aria-label={isMicOn ? "Выключить микрофон" : "Включить микрофон"}>
+                        <button onClick={toggleMic} className={`btn-control ${isMicOn ? '' : 'toggled-off'}`} aria-label={isMicOn ? "Выключить микрофон" : "Включить микрофон"} disabled={!isMediaActive}>
                             {isMicOn ? <MicOnIcon /> : <MicOffIcon />}
                         </button>
-                         <button onClick={toggleCamera} className={`btn-control ${isCameraOn ? '' : 'toggled-off'}`} aria-label={isCameraOn ? "Выключить камеру" : "Включить камеру"} disabled={!localStream?.getVideoTracks()[0]}>
+                         <button onClick={toggleCamera} className={`btn-control ${isCameraOn ? '' : 'toggled-off'}`} aria-label={isCameraOn ? "Выключить камеру" : "Включить камеру"} disabled={!localStream?.getVideoTracks()[0] || !isMediaActive}>
                             {isCameraOn ? <CamOnIcon /> : <CamOffIcon />}
                         </button>
                         <button onClick={leaveRoom} className="btn-end-call" aria-label="Завершить звонок">
