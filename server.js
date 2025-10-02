@@ -91,7 +91,7 @@ async function run() {
                 
                 console.log(`[INFO] Peer ${socket.id} creating ${isSender ? 'send' : 'recv'} transport`);
                 const transport = await room.router.createWebRtcTransport({
-                    listenIps: [{ ip: '0.0.0.0', announcedIp: null }],
+                    listenIps: [{ ip: '0.0.0.0', announcedIp: process.env.MEDIASOUP_ANNOUNCED_IP || null }],
                     enableUdp: true,
                     enableTcp: true,
                     preferUdp: true,

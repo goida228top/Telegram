@@ -108,6 +108,10 @@ systemctl restart nginx
 echo "--- [Шаг 5/5] Запуск/перезапуск медиа-сервера ---"
 cd "$PROJECT_DIR"
 # Надежная команда для запуска/перезапуска сервера
+# --- РЕКОМЕНДАЦИЯ ---
+# Если у вас есть проблемы с NAT, вы можете явно указать публичный IP вашего сервера.
+# Для этого раскомментируйте следующую строку и вставьте ваш IP.
+# export MEDIASOUP_ANNOUNCED_IP="ВАШ_ПУБЛИЧНЫЙ_IP_АДРЕС"
 pm2 restart rugram-media-server || pm2 start $SERVER_FILENAME --name rugram-media-server
 pm2 save
 
