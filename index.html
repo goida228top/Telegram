@@ -14,8 +14,6 @@
       --error-color: #cf6679;
       --border-radius: 12px;
       --font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-      --sent-message-bg: #372a49;
-      --received-message-bg: #2a2a2a;
     }
     *, *::before, *::after {
         box-sizing: border-box;
@@ -27,62 +25,52 @@
       color: var(--text-color);
       display: flex;
       justify-content: center;
-      align-items: flex-start;
+      align-items: center; /* Center vertically */
       min-height: 100vh;
-      padding: 1rem;
+      padding: 2rem;
     }
     #root {
       width: 100%;
-      max-width: 1400px;
-      height: calc(100vh - 2rem);
+      max-width: 1200px;
     }
     .app-container {
       display: flex;
       flex-direction: column;
-      gap: 1rem;
-      height: 100%;
+      gap: 2rem;
     }
     .header {
       text-align: center;
-      flex-shrink: 0;
     }
     .header h1 {
       margin: 0 0 0.5rem 0;
-      font-size: 2rem;
+      font-size: 2.5rem;
       color: var(--primary-color);
+    }
+    .header p {
+      margin: 0;
+      font-size: 1.1rem;
+      color: #9e9e9e;
     }
     .status {
       text-align: center;
       font-size: 1rem;
-      padding: 0.5rem 1rem;
+      padding: 0.75rem 1rem;
       background-color: rgba(255, 255, 255, 0.05);
       border: 1px solid rgba(255, 255, 255, 0.1);
       border-radius: var(--border-radius);
-      flex-shrink: 0;
     }
     .status-connected {
         color: var(--secondary-color);
         border-color: var(--secondary-color);
     }
     .status-disconnected {
-        color: #757575;
-        border-color: #424242;
-    }
-    .main-content {
-        display: grid;
-        grid-template-columns: 1fr;
-        gap: 1rem;
-        flex-grow: 1;
-        min-height: 0;
-    }
-    .main-content.in-call {
-        grid-template-columns: 3fr 1fr;
+        color: var(--error-color);
+        border-color: var(--error-color);
     }
     .videos-container {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-      gap: 1rem;
-      overflow-y: auto;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 2rem;
     }
     .video-wrapper {
       position: relative;
@@ -130,26 +118,30 @@
     .controls-container {
       display: flex;
       justify-content: center;
-      align-items: center;
       background-color: var(--surface-color);
       padding: 1.5rem;
       border-radius: var(--border-radius);
-      flex-shrink: 0;
-      min-height: 88px;
     }
-    .call-controls {
+    .room-controls, .call-controls, .auth-container {
       display: flex;
       gap: 1rem;
       width: 100%;
       max-width: 500px;
       align-items: center;
-      justify-content: center;
+      flex-direction: column;
     }
-    .footer-placeholder {
-        color: #757575;
-        font-style: italic;
+     .auth-container .auth-form {
+        width: 100%;
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
     }
-    input[type="text"] {
+    .call-controls {
+        flex-direction: row;
+        justify-content: center;
+    }
+    input[type="text"], input[type="email"] {
+      width: 100%;
       padding: 0.75rem 1rem;
       background-color: var(--background-color);
       color: var(--text-color);
@@ -158,7 +150,7 @@
       font-size: 1rem;
       transition: border-color 0.2s, box-shadow 0.2s;
     }
-    input[type="text"]:focus {
+    input[type="text"]:focus, input[type="email"]:focus {
         outline: none;
         border-color: var(--primary-color);
         box-shadow: 0 0 0 3px rgba(187, 134, 252, 0.2);
@@ -172,14 +164,17 @@
       cursor: pointer;
       color: #000;
       background-color: var(--primary-color);
-      transition: all 0.2s;
+      transition: transform 0.2s, background-color 0.2s;
       display: flex;
       justify-content: center;
       align-items: center;
-      gap: 0.5rem;
-      white-space: nowrap;
+      width: 100%;
     }
-    .btn-video {
+    .room-controls button {
+        white-space: nowrap;
+        width: auto;
+    }
+    .room-controls .btn-video {
         background-color: var(--secondary-color);
     }
     button:hover:not(:disabled) {
@@ -218,154 +213,43 @@
         background-color: #ff8a80;
     }
 
-    /* --- Chat Styles --- */
-    .chat-panel {
-        background-color: var(--surface-color);
-        border-radius: var(--border-radius);
-        display: flex;
-        flex-direction: column;
-        overflow: hidden;
-        min-height: 0;
-    }
-    .chat-messages {
-        flex-grow: 1;
-        overflow-y: auto;
-        padding: 1rem;
-        display: flex;
-        flex-direction: column;
-        gap: 0.75rem;
-    }
-    .message {
-        padding: 0.6rem 1rem;
-        border-radius: var(--border-radius);
-        max-width: 80%;
-        word-wrap: break-word;
-    }
-    .message.sent {
-        background-color: var(--sent-message-bg);
-        align-self: flex-end;
-        border-bottom-right-radius: 4px;
-    }
-    .message.received {
-        background-color: var(--received-message-bg);
-        align-self: flex-start;
-        border-bottom-left-radius: 4px;
-    }
-    .message-sender {
-        font-size: 0.8rem;
-        font-weight: bold;
-        margin-bottom: 0.25rem;
-        color: var(--secondary-color);
-    }
-    .message.sent .message-sender {
-        color: var(--primary-color);
-    }
-    .chat-form {
-        display: flex;
-        padding: 1rem;
-        border-top: 1px solid #333;
-    }
-    .chat-form input {
-        border-radius: var(--border-radius) 0 0 var(--border-radius);
-    }
-    .chat-form button {
-        border-radius: 0 var(--border-radius) var(--border-radius) 0;
-        padding: 0.75rem;
-    }
-    .chat-form button svg {
-        width: 24px; height: 24px;
-    }
-    
-    /* --- Idle & Call states --- */
-    .centered-overlay {
+    /* Incoming Call Modal */
+    .overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background-color: rgba(0, 0, 0, 0.7);
         display: flex;
         justify-content: center;
         align-items: center;
-        width: 100%;
-        height: 100%;
+        z-index: 1000;
     }
-    .idle-controls, .incoming-call-modal {
+    .modal {
         background-color: var(--surface-color);
         padding: 2rem;
         border-radius: var(--border-radius);
-        display: flex;
-        flex-direction: column;
-        gap: 1.5rem;
-        width: 100%;
+        text-align: center;
         max-width: 400px;
-        box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+        width: 90%;
+        box-shadow: 0 5px 20px rgba(0,0,0,0.5);
     }
-    .my-id-container {
-        display: flex;
-        flex-direction: column;
-        gap: 0.5rem;
+    .modal h2 {
+        margin-top: 0;
     }
-    .my-id-container label {
-        font-size: 0.9rem;
-        color: #aaa;
+    .modal p {
+        color: #b0b0b0;
+        margin-bottom: 2rem;
     }
-    .id-display {
-        display: flex;
-        align-items: center;
-        background-color: var(--background-color);
-        padding: 0.5rem 0.5rem 0.5rem 1rem;
-        border-radius: var(--border-radius);
-        border: 1px solid #424242;
-    }
-    .id-display span {
-        flex-grow: 1;
-        font-family: monospace;
-        letter-spacing: 1px;
-    }
-    .id-display button {
-        padding: 0.5rem;
-        background: none;
-        color: var(--primary-color);
-        min-width: 100px;
-    }
-    .id-display button svg { width: 20px; height: 20px; }
-    .call-actions {
+    .modal-actions {
         display: flex;
         gap: 1rem;
         justify-content: center;
     }
-    .call-actions button { flex-grow: 1; }
-    
-    .incoming-call-modal {
-        text-align: center;
-    }
-    .incoming-call-modal h3 {
-        margin: 0;
-        font-size: 1.5rem;
-    }
-    .incoming-call-modal p {
-        margin: 0.5rem 0 1.5rem 0;
-        color: #ccc;
-    }
-    .incoming-call-modal .btn-decline {
-        background-color: var(--error-color);
-    }
-
-
-    @media (max-width: 900px) {
-        body { padding: 0.5rem; }
-        .app-container { gap: 0.5rem; }
-        .main-content.in-call {
-            grid-template-columns: 1fr;
-            grid-template-rows: 1fr auto;
-        }
-        .chat-panel {
-            max-height: 40vh;
-        }
-    }
-    @media (max-width: 480px) {
-        .idle-controls, .incoming-call-modal {
-            padding: 1.5rem;
-        }
-        .call-actions {
-            flex-direction: column;
-        }
-    }
+     .modal-actions button {
+        width: auto;
+     }
 
   </style>
 <script type="importmap">
@@ -384,6 +268,6 @@
 <body>
   <!-- Application Root Element -->
   <div id="root"></div>
-  <script defer src="/dist/bundle.js?v=1721516709"></script>
+  <script defer src="/dist/bundle.js"></script>
 </body>
 </html>
