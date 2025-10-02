@@ -65,8 +65,8 @@
         border-color: var(--secondary-color);
     }
     .status-disconnected {
-        color: var(--error-color);
-        border-color: var(--error-color);
+        color: #757575;
+        border-color: #424242;
     }
     .main-content {
         display: grid;
@@ -130,23 +130,26 @@
     .controls-container {
       display: flex;
       justify-content: center;
+      align-items: center;
       background-color: var(--surface-color);
       padding: 1.5rem;
       border-radius: var(--border-radius);
       flex-shrink: 0;
+      min-height: 88px;
     }
-    .room-controls, .call-controls {
+    .call-controls {
       display: flex;
       gap: 1rem;
       width: 100%;
       max-width: 500px;
       align-items: center;
+      justify-content: center;
     }
-    .call-controls {
-        justify-content: center;
+    .footer-placeholder {
+        color: #757575;
+        font-style: italic;
     }
     input[type="text"] {
-      flex-grow: 1;
       padding: 0.75rem 1rem;
       background-color: var(--background-color);
       color: var(--text-color);
@@ -169,15 +172,14 @@
       cursor: pointer;
       color: #000;
       background-color: var(--primary-color);
-      transition: transform 0.2s, background-color 0.2s;
+      transition: all 0.2s;
       display: flex;
       justify-content: center;
       align-items: center;
+      gap: 0.5rem;
+      white-space: nowrap;
     }
-    .room-controls button {
-        white-space: nowrap;
-    }
-    .room-controls .btn-video {
+    .btn-video {
         background-color: var(--secondary-color);
     }
     button:hover:not(:disabled) {
@@ -273,6 +275,78 @@
     .chat-form button svg {
         width: 24px; height: 24px;
     }
+    
+    /* --- Idle & Call states --- */
+    .centered-overlay {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        width: 100%;
+        height: 100%;
+    }
+    .idle-controls, .incoming-call-modal {
+        background-color: var(--surface-color);
+        padding: 2rem;
+        border-radius: var(--border-radius);
+        display: flex;
+        flex-direction: column;
+        gap: 1.5rem;
+        width: 100%;
+        max-width: 400px;
+        box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+    }
+    .my-id-container {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+    }
+    .my-id-container label {
+        font-size: 0.9rem;
+        color: #aaa;
+    }
+    .id-display {
+        display: flex;
+        align-items: center;
+        background-color: var(--background-color);
+        padding: 0.5rem 0.5rem 0.5rem 1rem;
+        border-radius: var(--border-radius);
+        border: 1px solid #424242;
+    }
+    .id-display span {
+        flex-grow: 1;
+        font-family: monospace;
+        letter-spacing: 1px;
+    }
+    .id-display button {
+        padding: 0.5rem;
+        background: none;
+        color: var(--primary-color);
+        min-width: 100px;
+    }
+    .id-display button svg { width: 20px; height: 20px; }
+    .call-actions {
+        display: flex;
+        gap: 1rem;
+        justify-content: center;
+    }
+    .call-actions button { flex-grow: 1; }
+    
+    .incoming-call-modal {
+        text-align: center;
+    }
+    .incoming-call-modal h3 {
+        margin: 0;
+        font-size: 1.5rem;
+    }
+    .incoming-call-modal p {
+        margin: 0.5rem 0 1.5rem 0;
+        color: #ccc;
+    }
+    .incoming-call-modal .btn-decline {
+        background-color: var(--error-color);
+    }
+
+
     @media (max-width: 900px) {
         body { padding: 0.5rem; }
         .app-container { gap: 0.5rem; }
@@ -282,6 +356,14 @@
         }
         .chat-panel {
             max-height: 40vh;
+        }
+    }
+    @media (max-width: 480px) {
+        .idle-controls, .incoming-call-modal {
+            padding: 1.5rem;
+        }
+        .call-actions {
+            flex-direction: column;
         }
     }
 

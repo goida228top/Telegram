@@ -1,4 +1,4 @@
-// RuGram Media Server v4.2 (с поддержкой чата)
+// RuGram Signaling & Media Server v5.0 (с поддержкой вызовов по ID)
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -38,7 +38,7 @@ const createRoom = async (roomName) => {
     if (rooms[roomName]) {
         return rooms[roomName];
     }
-    console.log(`[INFO] Creating new room: ${roomName}`);
+    console.log(`[INFO] Creating new private room: ${roomName}`);
     const router = await worker.createRouter({ mediaCodecs });
     rooms[roomName] = { router, peers: new Map() };
     return rooms[roomName];
@@ -53,18 +53,57 @@ async function run() {
         io.on('connection', (socket) => {
             let currentRoomName;
 
+            socket.on('call-peer', ({ peerIdToCall, callType }) => {
+                const targetSocket = io.sockets.sockets.get(peerIdToCall);
+                if (targetSocket) {
+                    console.log(`[INFO] Relaying call from ${socket.id} to ${peerIdToCall}`);
+                    targetSocket.emit('incoming-call', { from: socket.id, callType });
+                } else {
+                    console.log(`[WARN] Peer ${peerIdToCall} not found for call from ${socket.id}`);
+                    socket.emit('peer-unavailable');
+                }
+            });
+
+            socket.on('call-accepted', async ({ to, callType }) => {
+                const callerSocket = io.sockets.sockets.get(to);
+                if (!callerSocket) {
+                     console.log(`[WARN] Original caller ${to} not found.`);
+                     return;
+                }
+                const roomName = `${to}-${socket.id}`;
+                await createRoom(roomName);
+
+                console.log(`[INFO] Call accepted between ${to} and ${socket.id}. Creating room ${roomName}`);
+                
+                callerSocket.emit('call-started', { roomName, callType });
+                socket.emit('call-started', { roomName, callType });
+            });
+            
+            socket.on('call-declined', ({ to }) => {
+                const callerSocket = io.sockets.sockets.get(to);
+                if (callerSocket) {
+                    console.log(`[INFO] Call from ${to} to ${socket.id} was declined.`);
+                    callerSocket.emit('peer-declined');
+                }
+            });
+
+
+            // --- Mediasoup specific logic ---
+
             socket.on('getRouterRtpCapabilities', async ({ roomName }, callback) => {
-                currentRoomName = roomName;
-                const room = await createRoom(roomName);
-                console.log(`[INFO] Peer ${socket.id} getting capabilities for room ${roomName}`);
-                callback(room.router.rtpCapabilities);
+                const room = rooms[roomName];
+                if (room) {
+                    callback(room.router.rtpCapabilities);
+                }
             });
 
             socket.on('joinRoom', ({ roomName }, callback) => {
                 if (!rooms[roomName]) {
+                    console.error(`[ERROR] Attempted to join non-existent room: ${roomName}`);
                     return;
                 }
                 
+                currentRoomName = roomName;
                 console.log(`[INFO] Peer ${socket.id} joining room ${roomName}`);
                 socket.join(roomName);
 
@@ -86,15 +125,28 @@ async function run() {
             });
             
             socket.on('sendMessage', ({ roomName, message }) => {
-                // Broadcast to everyone in the room except the sender
                 socket.to(roomName).emit('newMessage', { peerId: socket.id, message });
+            });
+            
+            socket.on('leaveRoom', () => {
+                // This is a soft leave, the hard leave is in 'disconnect'
+                if (!currentRoomName) return;
+                const room = rooms[currentRoomName];
+                if (!room) return;
+                socket.leave(currentRoomName);
+                 const peer = room.peers.get(socket.id);
+                if (peer) {
+                    peer.producers.forEach(producer => {
+                        producer.close();
+                         socket.to(currentRoomName).emit('producer-closed', { producerId: producer.id });
+                    });
+                }
             });
 
             socket.on('createWebRtcTransport', async ({ isSender }, callback) => {
                 const room = rooms[currentRoomName];
                 if (!room) return;
                 
-                console.log(`[INFO] Peer ${socket.id} creating ${isSender ? 'send' : 'recv'} transport`);
                 const transport = await room.router.createWebRtcTransport({
                     listenIps: [{ ip: '0.0.0.0', announcedIp: null }],
                     enableUdp: true,
@@ -206,6 +258,12 @@ async function run() {
                 peer.transports.forEach(transport => transport.close());
 
                 room.peers.delete(socket.id);
+                
+                if (room.peers.size === 0) {
+                    console.log(`[INFO] Closing empty room: ${currentRoomName}`);
+                    room.router.close();
+                    delete rooms[currentRoomName];
+                }
             });
         });
 
